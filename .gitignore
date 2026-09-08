@@ -3,6 +3,12 @@ node_modules/
 .pnp
 .pnp.js
 
+# Database files
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # Testing and Coverage
 coverage/
 

@@ -63,10 +63,10 @@ This document records the architectural, data modeling, and algorithmic decision
 * **Context**: Need a transparent, explainable ranking metric tailored to the triage task.
 * **Decision**:
   * **Formula**: $\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times \text{Failure/Error Rate}) \times 100$
-  * **Classification**:
+  * **Classification Rules**:
     * **Likely Broken**: $\text{Recoveries} = 0 \text{ AND } \text{Failure Rate} \ge 10\%$
-    * **Likely Flaky**: $\text{Recoveries} > 0$
-    * **Low Evidence**: $\text{Executions} < 50$
+    * **Likely Flaky**: $\text{Recovery Rate} \ge 5\%$
+    * **Possible Flake**: $\text{Recoveries} > 0 \text{ AND } \text{Recovery Rate} < 5\%$
     * **Stable**: All others
 * **Rationale**:
   * Gives 60% priority to non-deterministic recovery while accounting for CI failure impact (40%).
@@ -84,4 +84,29 @@ This document records the architectural, data modeling, and algorithmic decision
 * **Rationale**:
   * Flaky test triage requires transparent reasoning: developers must know *why* a test is flagged (e.g., "109 retries passed on attempt 2").
   * Black-box ML models reduce trust, require extensive training pipelines, and add unnecessary complexity for a deterministic CI dataset.
+* **Status**: Accepted.
+
+---
+
+## DECISION-008: SQLite Database Storage & Schema Architecture
+* **Date**: 2026-09-09
+* **Context**: Need a fast, persistent, self-contained relational storage solution for 55,364 test runs and 121 test summaries.
+* **Decision**: Use SQLite with two core tables:
+  1. `tests`: Aggregated test-level metrics (`test_id`, `flakiness_score`, `retry_recovery_rate`, `failure_error_rate`, `total_executions`, `retry_recoveries`, `classification`, `triage_status`, `updated_at`).
+  2. `test_runs`: Raw attempt-level execution history (`id`, `run_id`, `test_id`, `commit_sha`, `branch`, `worker`, `attempt`, `status`, `duration_ms`, `started_at`, `message`).
+* **Rationale**:
+  * **Zero Setup**: Embedded, single-file database (`flaky_test_triage.db`) requiring no external database servers or daemon processes.
+  * **Separation of Concerns**: `test_runs` retains the complete audit trail and raw attempt evidence, while `tests` provides instant $O(1)$ indexed reads for triage ranking.
+  * **Performance**: Indexing on `test_runs(test_id)` and `test_runs(run_id)` provides sub-millisecond retrieval for single-test historical deep-dives.
+* **Status**: Accepted.
+
+---
+
+## DECISION-009: Ingestion Data Quality & Duplicate Handling
+* **Date**: 2026-09-09
+* **Context**: Raw dataset contains negative durations, null durations, and 1,085 duplicate composite keys.
+* **Decision**:
+  * Every raw line is assigned an autoincrementing integer `id` in `test_runs` so all 55,364 records are preserved without collision.
+  * Negative durations are sanitized to `null` on insertion.
+  * During summary calculation, candidate duplicate records sharing `(run_id, test_id, attempt)` are deduplicated to ensure logical metrics precisely match verified dataset counts.
 * **Status**: Accepted.

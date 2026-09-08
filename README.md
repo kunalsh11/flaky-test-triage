@@ -30,12 +30,12 @@ The project analyzes the CI execution dataset located at `data/ci_runs.jsonl`. E
 Exploratory analysis on the dataset surfaced several real-world, production-like data quality anomalies that the downstream pipeline and ingestion logic must handle:
 
 1. **Missing `duration_ms`**: 5,377 records (~9.7% of rows) have `null` or missing duration values.
-2. **Negative `duration_ms`**: 158 records have negative execution durations (e.g., `-250ms`), likely caused by worker clock drift or timing calculation bugs.
-3. **Duplicate-Key Candidates**: 1,085 records share the identical composite key `(run_id, test_id, attempt)`. These are duplicate-key candidates emitted during network retries or logging flushes and must be deduplicated prior to aggregation.
+2. **Negative `duration_ms`**: 158 records have negative execution durations (e.g., `-250ms`), sanitized to `null` on ingestion.
+3. **Duplicate-Key Candidates**: 1,085 records share the identical composite key `(run_id, test_id, attempt)`. These are duplicate-key candidates emitted during network retries or logging flushes and are deduplicated prior to logical aggregation.
 4. **Mixed Timestamp Formats / Timezones**:
-   * 33,597 timestamps use UTC standard format with a `Z` suffix (e.g., `2026-07-01T06:25:27.000Z`).
-   * 14,356 timestamps use an explicit offset suffix (e.g., `+05:30`).
-   * 7,411 timestamps have **no timezone suffix** at all (e.g., `2026-07-29T15:14:55.000`), requiring explicit UTC parsing to prevent host machine timezone shifting.
+   * 33,597 timestamps use UTC standard format with a `Z` suffix.
+   * 14,356 timestamps use an explicit offset suffix (`+05:30`).
+   * 7,411 timestamps have no timezone suffix, parsed safely as UTC ISO strings.
 
 ---
 
@@ -62,131 +62,100 @@ A **Retry-Recovery Event** occurs when:
 
 ---
 
-## Flakiness Analysis
-For each of the 121 unique tests, the analysis calculated:
-* Total logical executions
-* Total passes, failures, errors, and skips
-* Failure/Error rate: $\frac{\text{Failures} + \text{Errors}}{\text{Total Logical Executions}}$
-* Total retry-recovery count and Retry-Recovery rate: $\frac{\text{Retry Recoveries}}{\text{Total Logical Executions}}$
-* Executions with retries and unrecovered failures
-* Average duration (calculated over valid positive `duration_ms` records)
+## Database Architecture (Step 6)
+The application uses **SQLite** (`backend/data/flaky_test_triage.db`) with two primary tables:
 
-### Behavioral Categories:
-1. **Flaky Tests**: Tests that alternate between pass and fail on the same commit/run, frequently recovering on retry.
-2. **Consistently Broken Tests**: Tests that fail repeatedly without recovering on retry.
-   * *Example*: `tests/payments/test_payments_idempotency` had 192 failures and 52 retries, but **0 retry recoveries** (46.09% failure rate). Retrying never fixed it; it is a persistently broken regression, not a flake.
-3. **Stable Tests**: Tests with consistent passes, high execution volume, and 0 retry recoveries.
+### 1. `tests` (Triage & Summary View)
+Stores test-level flakiness metrics, classifications, and mutable triage state:
+* `test_id` (TEXT PRIMARY KEY)
+* `flakiness_score` (REAL)
+* `retry_recovery_rate` (REAL)
+* `failure_error_rate` (REAL)
+* `total_executions` (INTEGER)
+* `retry_recoveries` (INTEGER)
+* `classification` (TEXT): `'Likely Broken'`, `'Likely Flaky'`, `'Possible Flake'`, or `'Stable'`
+* `triage_status` (TEXT DEFAULT `'untriaged'`): Can be updated to `'quarantined'`, `'acknowledged'`, or `'resolved'`
+* `updated_at` (TEXT)
 
----
-
-## Pattern Analysis
-Retry recoveries were analyzed across environmental dimensions:
-* **By Branch**: 39.0% of all recoveries occurred on `main` (231 recoveries), proportional to `main` receiving the highest CI volume, with the remaining recoveries distributed across 17 feature branches.
-* **By Worker**: Recoveries occurred across all 10 runners (`runner-01` through `runner-10`).
-* **By Date**: Recoveries were steady across all 30 days of July 2026.
-
-### Specific Observations:
-* **Broad Environmental Spread**: Top flaky tests (`test_oauth_callback_timeout`, `test_session_refresh_race`, `test_email_batch_send`) exhibited flakiness across all 10 runners, nearly all branches, and throughout the month.
-* **Worker Concentration**: For `tests/payments/test_webhook_signature`, all **45 of its 45 retry recoveries occurred on `runner-07`**. *(Note: This is an observed concentration pattern in the dataset for engineers to investigate worker environment differences, not a causal claim).*
+### 2. `test_runs` (Execution History & Attempt Evidence)
+Stores raw execution history and attempt evidence:
+* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
+* `run_id` (TEXT), `test_id` (TEXT), `commit_sha` (TEXT), `branch` (TEXT), `worker` (TEXT)
+* `attempt` (INTEGER), `status` (TEXT), `duration_ms` (INTEGER / NULL), `started_at` (TEXT), `message` (TEXT / NULL)
 
 ---
 
-## Flakiness Score
+## Flakiness Score & Classification
 
-### Initial Model (Rejected)
-We evaluated a 4-factor linear model:
-$$\text{Score} = 40\% \times \text{Recovery Rate} + 25\% \times \text{Failure Rate} + 20\% \times \text{Execution Impact} + 15\% \times \text{Evidence Confidence}$$
+### Formula
+$$\text{Flakiness Score} = (60\% \times \text{Retry Recovery Rate} + 40\% \times \text{Failure/Error Rate}) \times 100$$
 
-**Why it was rejected**:
-1. **Additive Base Inflation**: Tests running across all 447 runs received $+35$ base points purely for running, causing completely stable tests to outrank actual flaky tests.
-2. **Penalization of Test Migrations**: `test_checkout_flow` (v1) and `test_checkout_flow_v2` (v2) ran ~200 times each due to a mid-month test migration. Their lower individual volume reduced their Impact score, incorrectly burying them at ranks #120 and #121 despite 10%+ flakiness.
-3. **Misranking Broken Tests**: The broken test `test_payments_idempotency` ranked #4 flaky because of high failure rate + 35 base points.
-
-### Final Proposed Model (Validated)
-$$\text{Flakiness Score} = (60\% \times \text{Retry Recovery Rate} + 40\% \text{Failure/Error Rate}) \times 100$$
-
-**Classification Rules**:
+### Classification Rules
 * **Likely Broken**: Retry Recovery Count $= 0$ AND Failure/Error Rate $\ge 10\%$
-* **Likely Flaky**: Retry Recovery Count $> 0$
-* **Low Evidence**: Logical Executions $< 50$
+* **Likely Flaky**: Retry Recovery Rate $\ge 5\%$
+* **Possible Flake**: Retry Recovery Count $> 0$ AND Retry Recovery Rate $< 5\%$
 * **Stable**: All other tests
 
-**Why this model works**:
-* Strongly prioritizes retry recovery (the core hallmark of flakiness) while capturing overall CI failure disruption.
-* Transparent, explainable, and free of artificial score floors.
-* Distinct classification badges clearly separate broken regressions from flaky tests.
+---
+
+## Top 10 Ranked Tests in SQLite
+
+| Rank | Test ID | Execs | Recoveries | Recovery Rate | Failure Rate | Score | Classification | Triage Status |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
+| **#1** | `tests/auth/test_oauth_callback_timeout` | 447 | 109 | 24.4% | 32.4% | **27.61** | Likely Flaky | untriaged |
+| **#2** | `tests/auth/test_session_refresh_race` | 447 | 96 | 21.5% | 28.2% | **24.16** | Likely Flaky | untriaged |
+| **#3** | `tests/notifications/test_email_batch_send` | 447 | 90 | 20.1% | 28.0% | **23.27** | Likely Flaky | untriaged |
+| **#4** | `tests/payments/test_payments_idempotency` | 447 | 0 | 0.0% | 46.1% | **18.43** | **Likely Broken** | untriaged |
+| **#5** | `tests/checkout/test_checkout_flow` | 198 | 23 | 11.6% | 18.2% | **14.24** | Likely Flaky | untriaged |
+| **#6** | `tests/checkout/test_cart_merge_concurrent` | 447 | 50 | 11.2% | 15.9% | **13.06** | Likely Flaky | untriaged |
+| **#7** | `tests/checkout/test_checkout_flow_v2` | 244 | 25 | 10.3% | 15.6% | **12.38** | Likely Flaky | untriaged |
+| **#8** | `tests/payments/test_webhook_signature` | 447 | 45 | 10.1% | 15.0% | **12.04** | Likely Flaky | untriaged |
+| **#9** | `tests/admin/test_bulk_export` | 447 | 45 | 10.1% | 12.1% | **10.87** | Likely Flaky | untriaged |
+| **#10** | `tests/search/test_fuzzy_ranking` | 447 | 33 | 7.4% | 11.2% | **8.90** | Likely Flaky | untriaged |
 
 ---
 
-## Important Ranking Findings
-
-| Rank | Test ID | Execs | Recoveries | Recovery Rate | Failure Rate | Flakiness Score | Classification |
-| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **#1** | `tests/auth/test_oauth_callback_timeout` | 447 | 109 | 24.4% | 32.4% | **27.61** | Likely Flaky |
-| **#2** | `tests/auth/test_session_refresh_race` | 447 | 96 | 21.5% | 28.2% | **24.16** | Likely Flaky |
-| **#3** | `tests/notifications/test_email_batch_send` | 447 | 90 | 20.1% | 28.0% | **23.27** | Likely Flaky |
-| **#4** | `tests/payments/test_payments_idempotency` | 447 | 0 | 0.0% | 46.1% | **18.43** | **Likely Broken** |
-| **#5** | `tests/checkout/test_checkout_flow` | 198 | 23 | 11.6% | 18.2% | **14.24** | Likely Flaky |
-| **#6** | `tests/checkout/test_cart_merge_concurrent` | 447 | 50 | 11.2% | 15.9% | **13.06** | Likely Flaky |
-| **#7** | `tests/checkout/test_checkout_flow_v2` | 244 | 25 | 10.2% | 15.6% | **12.38** | Likely Flaky |
-| **#8** | `tests/payments/test_webhook_signature` | 447 | 45 | 10.1% | 15.0% | **12.04** | Likely Flaky |
-| **#9** | `tests/admin/test_bulk_export` | 447 | 45 | 10.1% | 12.1% | **10.87** | Likely Flaky |
-| **#10** | `tests/search/test_fuzzy_ranking` | 447 | 33 | 7.4% | 11.2% | **8.90** | Likely Flaky |
-
-### Notable Highlights:
-* **#1 `test_oauth_callback_timeout`**: Fails and recovers on ~1 out of every 4 CI runs (109 recoveries).
-* **#2 `test_session_refresh_race` & #3 `test_email_batch_send`**: Exhibit persistent concurrency/timeout flakiness across all workers.
-* **#4 `test_payments_idempotency`**: Clearly demarcated as **Likely Broken** (0 recoveries), preventing engineers from misdiagnosing it as a flake.
-* **#5 & #7 `test_checkout_flow` (v1 & v2)**: Successfully identified as top flaky tests despite lower individual execution counts resulting from test suite refactoring.
-
----
-
-## Current Project Structure
+## Project Structure
 
 ```text
 flaky-test-triage/
 ├── data/
 │   └── ci_runs.jsonl                 # Raw CI runs dataset (55,364 JSONL lines)
 ├── analysis/
-│   ├── explore_data.js               # Dataset profiling, statistics & data quality detection
-│   ├── analyze_flakiness.js          # Logical execution grouping & per-test flakiness metrics
+│   ├── explore_data.js               # Dataset profiling & data quality detection
+│   ├── analyze_flakiness.js          # Logical execution grouping & per-test metrics
 │   ├── analyze_flake_patterns.js     # Environmental pattern analysis (branch, worker, date)
 │   ├── design_flakiness_score.js     # Initial 4-factor scoring model evaluation
-│   └── validate_flakiness_score.js   # Validated 60/40 scoring model & test classification
-├── backend/                          # Backend application directory (Step 6)
+│   └── validate_flakiness_score.js   # Validated 60/40 scoring model & classification
+├── backend/
+│   ├── data/
+│   │   └── flaky_test_triage.db      # SQLite database file
+│   └── src/
+│       └── db/
+│           ├── connection.js         # SQLite connection & schema initialization
+│           ├── ingest.js             # Data ingestion and summary aggregation script
+│           └── validate_db.js        # Database validation checks script
 ├── frontend/                         # Frontend application directory
-├── AI_WORK_LOG.md                    # Record of AI delegation, accepted outputs & rejected suggestions
-├── DECISION_LOG.md                   # Architectural, data-analysis, and scoring decisions
+├── AI_WORK_LOG.md                    # Record of AI delegation & prompt decisions
+├── DECISION_LOG.md                   # Architectural, data-analysis, and database decisions
 ├── README.md                         # Project documentation and analysis findings
 └── .gitignore                        # Git ignore configuration
 ```
 
 ---
 
-## How To Run The Analysis
-
-All analysis scripts use standard Node.js built-in modules with zero external package dependencies.
+## How To Run Database Ingestion & Validation
 
 ```bash
-# 1. Inspect dataset counts and data quality anomalies
-node analysis/explore_data.js
+# Ingest raw dataset into SQLite and compute test summary metrics
+node backend/src/db/ingest.js
 
-# 2. Analyze per-test logical executions and retry recovery rates
-node analysis/analyze_flakiness.js
-
-# 3. Analyze branch, worker, and date patterns
-node analysis/analyze_flake_patterns.js
-
-# 4. Evaluate initial scoring model and edge cases
-node analysis/design_flakiness_score.js
-
-# 5. Run validated 60/40 scoring formula and classification
-node analysis/validate_flakiness_score.js
+# Run database validation suite
+node backend/src/db/validate_db.js
 ```
 
 ---
 
 ## Current Status
-* **Completed**: Data exploration, data quality audit, logical execution modeling, retry recovery analysis, environmental pattern detection, and scoring formula validation.
-* **Pending**: Backend database ingestion, REST API endpoints, automated tests, and frontend dashboard.
-* **Next Step**: **Step 6 — Database & Data Model Design**.
+* **Completed**: Data exploration, data quality audit, scoring validation, SQLite schema design, dataset ingestion pipeline, and database validation queries.
+* **Next Step**: **Step 7 — Backend REST API implementation**.
