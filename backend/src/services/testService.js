@@ -103,7 +103,6 @@ function getRankedTests(filters = {}) {
       });
     }
 
-    // Preserve the raw attempt in the logical execution
     logicalExecutionsMap.get(groupKey).attempts.push({
       attempt: row.attempt,
       status: row.status,
@@ -117,7 +116,6 @@ function getRankedTests(filters = {}) {
   for (const execution of logicalExecutionsMap.values()) {
     execution.attempts.sort((a, b) => a.attempt - b.attempt);
 
-    // Initial attempt defines the start time and branch of the logical execution
     const firstAttempt = execution.attempts[0];
 
     // Branch filter
@@ -125,7 +123,7 @@ function getRankedTests(filters = {}) {
       continue;
     }
 
-    // Date range filter based on the start timestamp of Attempt 1 in UTC
+    // Date range filter based on start timestamp of Attempt 1 in UTC
     if (fromUtcMs !== null || toUtcMs !== null) {
       const executionStartMs = parseTimestampToUtcMs(firstAttempt.started_at);
       if (executionStartMs !== null) {
@@ -213,6 +211,51 @@ function getRankedTests(filters = {}) {
   return results;
 }
 
+function getTestDetail(testId) {
+  const db = getDatabase();
+
+  const summaryQuery = `
+    SELECT 
+      test_id,
+      flakiness_score,
+      retry_recovery_rate,
+      failure_error_rate,
+      classification,
+      triage_status
+    FROM tests
+    WHERE test_id = ?
+  `;
+
+  const summary = db.prepare(summaryQuery).get(testId);
+  if (!summary) {
+    return null;
+  }
+
+  const historyQuery = `
+    SELECT 
+      run_id,
+      commit_sha,
+      branch,
+      worker,
+      attempt,
+      status,
+      duration_ms,
+      started_at,
+      message
+    FROM test_runs
+    WHERE test_id = ?
+    ORDER BY started_at DESC, id DESC
+  `;
+
+  const history = db.prepare(historyQuery).all(testId);
+
+  return {
+    summary,
+    history,
+  };
+}
+
 module.exports = {
   getRankedTests,
+  getTestDetail,
 };

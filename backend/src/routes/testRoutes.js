@@ -1,5 +1,5 @@
 const express = require('express');
-const { getRankedTests } = require('../services/testService');
+const { getRankedTests, getTestDetail } = require('../services/testService');
 
 const router = express.Router();
 
@@ -11,6 +11,32 @@ const VALID_CLASSIFICATIONS = new Set([
 ]);
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get('/detail', (req, res) => {
+  try {
+    const testId = req.query.test_id;
+
+    if (!testId || !testId.trim()) {
+      return res.status(400).json({
+        error: "test_id query parameter is required (e.g. /api/tests/detail?test_id=tests/auth/test_oauth_callback_timeout)",
+      });
+    }
+
+    const detail = getTestDetail(testId.trim());
+    if (!detail) {
+      return res.status(404).json({
+        error: `Test with id '${testId}' not found`,
+      });
+    }
+
+    res.json(detail);
+  } catch (err) {
+    console.error('Error retrieving test detail:', err);
+    res.status(500).json({
+      error: 'Failed to retrieve test details',
+    });
+  }
+});
 
 router.get('/', (req, res) => {
   try {
