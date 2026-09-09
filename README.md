@@ -1,161 +1,188 @@
 # Flaky Test Triage
 
-## Problem Statement
-In modern continuous integration (CI) pipelines, flaky tests—tests that exhibit both passing and failing results on the exact same commit without code changes—create severe developer friction. They cause false-alarm build failures, waste compute resources on unnecessary rebuilds, and erode engineering trust in the CI test suite.
+## 1. Project Overview
+In continuous integration (CI) environments, flaky tests—tests that non-deterministically pass and fail on the exact same commit without any code change—waste developer time, trigger unnecessary re-runs, and reduce confidence in automated test suites.
 
-The goal of this internal engineering tool is to help an engineer systematically triage CI test runs and decide **which flaky test should be investigated and fixed first**, rather than naively ranking tests by raw failure counts.
+**Flaky Test Triage** is an internal developer tool built to help software engineers systematically triage CI test suites and determine **which flaky test should be investigated and fixed first**, rather than naively sorting by raw failure counts.
+
+The system analyzes approximately **55,000 CI execution records** spanning a **30-day period**, computes an explainable flakiness score (0–100), and provides a clean REST API for ranking and historical inspection.
 
 ---
 
-## Dataset
-The project analyzes the CI execution dataset located at `data/ci_runs.jsonl`. Exploration revealed the following concrete statistics:
+## 2. Tech Stack
+* **Backend**: Node.js, Express
+* **Database**: SQLite (embedded via Node.js `node:sqlite`)
+* **API Validation & Testing**: Postman, Node.js automated test scripts
+* **Dataset Format**: JSON Lines (`.jsonl`)
 
-* **Format**: JSON Lines (`.jsonl`), with each line representing an attempt of a test execution.
-* **Total Records**: 55,364 records.
-* **Unique Test IDs (`test_id`)**: 121 distinct test cases.
-* **Unique CI Runs (`run_id`)**: 447 CI pipeline runs.
-* **Unique Branches**: 18 branches (including `main` and 17 feature branches like `feature/PLAT-101` to `feature/PLAT-117`).
-* **Unique CI Workers**: 10 runners (`runner-01` through `runner-10`).
-* **Observation Period**: 30 days (July 1, 2026 to July 31, 2026).
-* **Execution Statuses**:
+---
+
+## 3. Dataset Findings & Data Quality Audit
+The project analyzes the raw dataset located at `data/ci_runs.jsonl`. Comprehensive exploration revealed the following statistics and real-world data quality anomalies:
+
+* **Total Raw Records**: 55,364 attempt records
+* **Unique Test Cases (`test_id`)**: 121 tests
+* **Unique CI Pipeline Runs (`run_id`)**: 447 runs
+* **Unique Git Branches**: 18 branches (`main` and 17 feature branches)
+* **Unique CI Workers**: 10 runners (`runner-01` through `runner-10`)
+* **Execution Status Distribution**:
   * `passed`: 49,397 records (89.2%)
   * `failed`: 1,105 records (2.0%)
   * `error`: 1,610 records (2.9%)
   * `skipped`: 3,252 records (5.9%)
-* **Attempt Tracking**: Test retries are tracked via the `attempt` integer field (`1` or `2`).
+* **Retry Observations**:
+  * 652 records have `attempt > 1` (test retries)
+  * **592 retry-recovery events** identified (~90.8% of retries recovered to pass)
+* **Data Quality Findings**:
+  * **5,377 missing durations**: Ingested and stored safely as `null`.
+  * **158 negative durations** (e.g. `-250ms`): Sanitized to `null` to avoid skewing test timing averages.
+  * **1,085 duplicate-key candidates**: Records sharing `(run_id, test_id, attempt)` resulting from logging retries were preserved in the raw database and deduplicated only when exact field values matched.
+  * **Mixed Timestamp Formats**: UTC timestamps with `Z`, explicit offsets (`+05:30`), and suffix-less timestamps were explicitly normalized to UTC.
 
 ---
 
-## Data Quality Findings
-Exploratory analysis on the dataset surfaced several real-world, production-like data quality anomalies that the downstream pipeline and ingestion logic must handle:
+## 4. Definition of Flakiness
 
-1. **Missing `duration_ms`**: 5,377 records (~9.7% of rows) have `null` or missing duration values.
-2. **Negative `duration_ms`**: 158 records have negative execution durations (e.g., `-250ms`), sanitized to `null` on ingestion.
-3. **Duplicate-Key Candidates**: 1,085 records share the identical composite key `(run_id, test_id, attempt)`. These are duplicate-key candidates emitted during network retries or logging flushes and are deduplicated prior to logical aggregation.
-4. **Mixed Timestamp Formats / Timezones**:
-   * 33,597 timestamps use UTC standard format with a `Z` suffix.
-   * 14,356 timestamps use an explicit offset suffix (`+05:30`).
-   * 7,411 timestamps have no timezone suffix, parsed safely as UTC ISO strings.
-
----
-
-## Logical Execution Definition
-A foundational architectural decision in this analysis is the definition of a **Logical Execution**:
-
+### Logical Execution
 $$\text{Logical Execution} = \text{run\_id} + \text{test\_id}$$
 
-* Multiple attempts within the same CI run (e.g., `attempt: 1` followed by `attempt: 2`) belong to the **same logical test execution**.
-* Counting attempt 1 and attempt 2 as independent test executions would artificially inflate total execution counts and distort failure rates.
-* Deduplicating duplicate keys and grouping by `run_id + test_id` yields **53,635 unique logical executions** across the 447 CI runs.
+* Multiple attempts within the same CI run (e.g., Attempt 1 followed by Attempt 2) belong to the **same logical execution**.
+* Counting retries as independent executions would artificially inflate total execution counts and distort failure rates.
+* Deduplicating and grouping yields **53,635 unique logical executions**.
 
----
-
-## Retry Recovery
-A **Retry-Recovery Event** occurs when:
+### Retry Recovery Event
+A **Retry-Recovery Event** is defined as:
 1. `attempt: 1` results in `failed` or `error`.
-2. A subsequent attempt (`attempt: 2`) on the same `run_id` + `test_id` results in `passed`.
+2. A subsequent attempt (`attempt > 1`) within the same logical execution results in `passed`.
 
-### Dataset Findings:
-* **652 records** in the dataset have `attempt > 1`.
-* **592 retry-recovery events** were identified across all tests.
-* **~90.8% of all retries recovered to pass**, demonstrating that retry-recovery is the single strongest empirical signal of non-deterministic (flaky) behavior in this CI suite.
+Because retries occur on the identical commit and environment, retry recovery is the single strongest empirical proof of non-deterministic (flaky) behavior.
 
 ---
 
-## Database Architecture (Step 6)
-The application uses **SQLite** (`backend/data/flaky_test_triage.db`) with two primary tables:
+## 5. Flakiness Scoring Model
 
-### 1. `tests` (Triage & Summary View)
-Stores test-level flakiness metrics, classifications, and mutable triage state:
-* `test_id` (TEXT PRIMARY KEY)
-* `flakiness_score` (REAL)
-* `retry_recovery_rate` (REAL)
-* `failure_error_rate` (REAL)
-* `total_executions` (INTEGER)
-* `retry_recoveries` (INTEGER)
-* `classification` (TEXT): `'Likely Broken'`, `'Likely Flaky'`, `'Possible Flake'`, or `'Stable'`
-* `triage_status` (TEXT DEFAULT `'untriaged'`): Can be updated to `'quarantined'`, `'acknowledged'`, or `'resolved'`
-* `updated_at` (TEXT)
+$$\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times \text{Failure/Error Rate}) \times 100$$
 
-### 2. `test_runs` (Execution History & Attempt Evidence)
-Stores raw execution history and attempt evidence:
-* `id` (INTEGER PRIMARY KEY AUTOINCREMENT)
-* `run_id` (TEXT), `test_id` (TEXT), `commit_sha` (TEXT), `branch` (TEXT), `worker` (TEXT)
-* `attempt` (INTEGER), `status` (TEXT), `duration_ms` (INTEGER / NULL), `started_at` (TEXT), `message` (TEXT / NULL)
+Where:
+* $\text{Retry Recovery Rate} = \frac{\text{Retry Recovery Events}}{\text{Total Logical Executions}}$
+* $\text{Failure/Error Rate} = \frac{\text{Logical Executions with Failures or Errors}}{\text{Total Logical Executions}}$
+* **Score Range**: 0.00 to 100.00
+
+### Why Retry Recovery Receives 60% Weight
+A failure followed by a passing retry is direct proof of non-deterministic instability. Simple repeated failures often represent genuine code regressions rather than flakiness.
 
 ---
 
-## Flakiness Score & Classification
+## 6. Test Classification System
 
-### Formula
-$$\text{Flakiness Score} = (60\% \times \text{Retry Recovery Rate} + 40\% \times \text{Failure/Error Rate}) \times 100$$
-
-### Classification Rules
-* **Likely Broken**: Retry Recovery Count $= 0$ AND Failure/Error Rate $\ge 10\%$
-* **Likely Flaky**: Retry Recovery Rate $\ge 5\%$
-* **Possible Flake**: Retry Recovery Count $> 0$ AND Retry Recovery Rate $< 5\%$
-* **Stable**: All other tests
+1. **Likely Broken**: $\text{Retry Recoveries} = 0 \text{ AND } \text{Failure/Error Rate} \ge 10\%$
+2. **Likely Flaky**: $\text{Retry Recovery Rate} \ge 5\%$
+3. **Possible Flake**: $\text{Retry Recoveries} > 0 \text{ AND } \text{Retry Recovery Rate} < 5\%$
+4. **Stable**: All other tests with no meaningful failure or recovery signals.
 
 ---
 
-## Top 10 Ranked Tests in SQLite
+## 7. Important Examples from the Dataset
 
-| Rank | Test ID | Execs | Recoveries | Recovery Rate | Failure Rate | Score | Classification | Triage Status |
-| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
-| **#1** | `tests/auth/test_oauth_callback_timeout` | 447 | 109 | 24.4% | 32.4% | **27.61** | Likely Flaky | untriaged |
-| **#2** | `tests/auth/test_session_refresh_race` | 447 | 96 | 21.5% | 28.2% | **24.16** | Likely Flaky | untriaged |
-| **#3** | `tests/notifications/test_email_batch_send` | 447 | 90 | 20.1% | 28.0% | **23.27** | Likely Flaky | untriaged |
-| **#4** | `tests/payments/test_payments_idempotency` | 447 | 0 | 0.0% | 46.1% | **18.43** | **Likely Broken** | untriaged |
-| **#5** | `tests/checkout/test_checkout_flow` | 198 | 23 | 11.6% | 18.2% | **14.24** | Likely Flaky | untriaged |
-| **#6** | `tests/checkout/test_cart_merge_concurrent` | 447 | 50 | 11.2% | 15.9% | **13.06** | Likely Flaky | untriaged |
-| **#7** | `tests/checkout/test_checkout_flow_v2` | 244 | 25 | 10.3% | 15.6% | **12.38** | Likely Flaky | untriaged |
-| **#8** | `tests/payments/test_webhook_signature` | 447 | 45 | 10.1% | 15.0% | **12.04** | Likely Flaky | untriaged |
-| **#9** | `tests/admin/test_bulk_export` | 447 | 45 | 10.1% | 12.1% | **10.87** | Likely Flaky | untriaged |
-| **#10** | `tests/search/test_fuzzy_ranking` | 447 | 33 | 7.4% | 11.2% | **8.90** | Likely Flaky | untriaged |
+* **`tests/auth/test_oauth_callback_timeout`**
+  * **Score**: `27.61` | **Classification**: `Likely Flaky`
+  * **Metrics**: 109 recoveries across 447 runs (24.38% recovery rate, 32.44% failure rate).
+  * **Insight**: Top flaky candidate; consistently fails on attempt 1 due to timeouts and recovers on retry.
+* **`tests/payments/test_payments_idempotency`**
+  * **Score**: `18.43` | **Classification**: **`Likely Broken`**
+  * **Metrics**: 0 recoveries across 447 runs (0.00% recovery rate, 46.09% failure rate).
+  * **Insight**: Has the highest failure count in the test suite, but retries *never* pass. It is a persistent bug/regression, separated from classic flakes.
 
 ---
 
-## Project Structure
+## 8. Database Architecture
 
-```text
-flaky-test-triage/
-├── data/
-│   └── ci_runs.jsonl                 # Raw CI runs dataset (55,364 JSONL lines)
-├── analysis/
-│   ├── explore_data.js               # Dataset profiling & data quality detection
-│   ├── analyze_flakiness.js          # Logical execution grouping & per-test metrics
-│   ├── analyze_flake_patterns.js     # Environmental pattern analysis (branch, worker, date)
-│   ├── design_flakiness_score.js     # Initial 4-factor scoring model evaluation
-│   └── validate_flakiness_score.js   # Validated 60/40 scoring model & classification
-├── backend/
-│   ├── data/
-│   │   └── flaky_test_triage.db      # SQLite database file
-│   └── src/
-│       └── db/
-│           ├── connection.js         # SQLite connection & schema initialization
-│           ├── ingest.js             # Data ingestion and summary aggregation script
-│           └── validate_db.js        # Database validation checks script
-├── frontend/                         # Frontend application directory
-├── AI_WORK_LOG.md                    # Record of AI delegation & prompt decisions
-├── DECISION_LOG.md                   # Architectural, data-analysis, and database decisions
-├── README.md                         # Project documentation and analysis findings
-└── .gitignore                        # Git ignore configuration
-```
+SQLite (`backend/data/flaky_test_triage.db`) separates summary metrics from raw attempt history:
+
+1. **`tests` Table (Summary & Triage View)**:
+   * `test_id` (TEXT PRIMARY KEY), `flakiness_score`, `retry_recovery_rate`, `failure_error_rate`, `total_executions`, `retry_recoveries`, `classification`, `triage_status` (Default: `'untriaged'`), `updated_at`.
+2. **`test_runs` Table (Raw Execution Evidence)**:
+   * `id` (INTEGER PRIMARY KEY AUTOINCREMENT), `run_id`, `test_id`, `commit_sha`, `branch`, `worker`, `attempt`, `status`, `duration_ms`, `started_at`, `message`.
 
 ---
 
-## How To Run Database Ingestion & Validation
+## 9. REST API Endpoints
 
-```bash
-# Ingest raw dataset into SQLite and compute test summary metrics
-node backend/src/db/ingest.js
+### 1. Health Check
+* **`GET /api/health`**
+* **Response**: `{"status": "ok"}`
 
-# Run database validation suite
-node backend/src/db/validate_db.js
-```
+### 2. Ranked Test List & Filters
+* **`GET /api/tests`**
+* **Optional Query Parameters**:
+  * `branch`: Filter by branch (e.g. `?branch=main`).
+  * `from`: Filter executions starting from date `YYYY-MM-DD` (e.g. `?from=2026-07-15`).
+  * `to`: Filter executions up through date `YYYY-MM-DD` (e.g. `?to=2026-07-31`).
+  * `classification`: Filter by classification badge (`Likely Flaky`, `Likely Broken`, `Possible Flake`, `Stable`).
+* **Response**: JSON array of test objects ordered by `flakiness_score DESC`.
+
+### 3. Single-Test Detail & History
+* **`GET /api/tests/detail?test_id=<test_id>`**
+* *Example*: `GET /api/tests/detail?test_id=tests/auth/test_oauth_callback_timeout`
+* *Note*: Query parameter is used because `test_id` paths contain slashes.
+* **Response**:
+  ```json
+  {
+    "summary": {
+      "test_id": "tests/auth/test_oauth_callback_timeout",
+      "flakiness_score": 27.61,
+      "retry_recovery_rate": 0.2438,
+      "failure_error_rate": 0.3244,
+      "classification": "Likely Flaky",
+      "triage_status": "untriaged"
+    },
+    "history": [
+      {
+        "run_id": "7a41eaa0-eab2-216c-8824-310c92a05d75",
+        "commit_sha": "db481baad9ae",
+        "branch": "feature/PLAT-110",
+        "worker": "runner-07",
+        "attempt": 1,
+        "status": "passed",
+        "duration_ms": 1452,
+        "started_at": "2026-07-31T01:23:26.000+05:30",
+        "message": null
+      }
+    ]
+  }
+  ```
 
 ---
 
-## Current Status
-* **Completed**: Data exploration, data quality audit, scoring validation, SQLite schema design, dataset ingestion pipeline, and database validation queries.
-* **Next Step**: **Step 7 — Backend REST API implementation**.
+## 10. Validation & Testing
+
+Database and API behavior were validated end-to-end:
+1. **Database Validation (`backend/src/db/validate_db.js`)**:
+   * Verified 121 unique tests in `tests`.
+   * Verified 55,364 raw records in `test_runs`.
+   * Verified separate storage of attempts (e.g., `tests/search/test_fuzzy_ranking` Attempt 1 failed in 1690ms, Attempt 2 passed in 1779ms).
+2. **API & Postman Validation**:
+   * `GET /api/health` returns `HTTP 200` and `{"status": "ok"}`.
+   * `GET /api/tests` returns `HTTP 200` with 121 items ranked descending by score.
+   * First test is `test_oauth_callback_timeout` with score `27.61` and classification `Likely Flaky`.
+   * Every test object contains `triage_status`.
+   * Filter endpoints (`branch`, `classification`, `from`/`to`) validated against expected distributions.
+   * `GET /api/tests/detail` validated with valid IDs (`200 OK`), missing parameter (`400 Bad Request`), and non-existent IDs (`404 Not Found`).
+
+---
+
+## 11. Limitations & Intentional Non-Goals
+To keep the project focused, robust, and completed within the assignment scope, the following were intentionally omitted:
+* **Authentication & Authorization**: Built as an internal tool for trusted developer environments.
+* **External Database Infrastructure**: Embedded SQLite was chosen over PostgreSQL/MySQL to eliminate external setup dependencies.
+* **Distributed Caching / Redis**: Sub-millisecond SQLite query execution eliminated the need for secondary caching.
+* **Complex Machine Learning**: Replaced by transparent, explainable arithmetic scoring heuristics.
+* **Production Deployment / CI Pipelines for this repo**: Focused strictly on core triage functionality.
+
+---
+
+## 12. Future Improvements
+* **Automated Webhook Ingestion**: Ingesting test results in real-time from GitHub Actions or GitLab CI.
+* **Environmental Anomaly Detection**: Automated flagging for runner-specific flakiness (e.g., `test_webhook_signature` on `runner-07`).
+* **Commit Attribution**: Correlating sudden flakiness regressions with specific pull requests.
+* **Duration Degradation Alerts**: P95 latency tracking to detect degrading performance before outright timeouts occur.

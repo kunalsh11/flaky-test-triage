@@ -1,112 +1,117 @@
 # Decision Log
 
-This document records the architectural, data modeling, and algorithmic decisions made during the Flaky Test Triage project.
+This document records the architectural, data modeling, algorithmic, and API design decisions made during the Flaky Test Triage project (Steps 1–7D).
 
 ---
 
-## DECISION-001: Logical Execution Definition (`run_id + test_id`)
+## DECISION-001: Inspect Dataset Before Implementation
 * **Date**: 2026-09-08
-* **Context**: The `ci_runs.jsonl` dataset contains 55,364 attempt records across 447 CI pipeline runs. CI retries are emitted as separate lines with `attempt: 2`.
-* **Decision**: Group all attempt records sharing the same `(run_id, test_id)` into a single **Logical Execution**.
+* **Context**: Before writing database schemas or APIs, we performed an in-depth data profiling step on `data/ci_runs.jsonl`.
+* **Decision**: Inspect the raw dataset thoroughly using standalone Node.js streaming scripts.
 * **Rationale**:
-  * If Attempt 1 and Attempt 2 were treated as independent executions, a test retried in CI would be counted as two executions, artificially lowering its perceived failure rate and masking retry behavior.
-  * Preserving retry attempts as an ordered sequence within the logical execution allows computing retry-recovery transitions accurately.
+  * Real-world CI logs contain anomalies: 5,377 missing durations, 158 negative durations, 1,085 duplicate-key candidates, and three distinct timestamp formats.
+  * Auditing the dataset first prevented building assumptions on "clean" data and guided defensive ingestion logic.
 * **Status**: Accepted.
 
 ---
 
-## DECISION-002: Deduplication of Candidate Records
+## DECISION-002: Logical Execution Definition (`run_id + test_id`)
 * **Date**: 2026-09-08
-* **Context**: 1,085 records in `ci_runs.jsonl` contain identical `(run_id, test_id, attempt)` composite keys.
-* **Decision**: Deduplicate records by composite key `(run_id, test_id, attempt)` during the initial stream processing.
-* **Rationale**: Prevents duplicate log flushes or network retries from inflating execution or failure statistics.
+* **Context**: CI pipelines retry failing tests within the same run, creating multiple attempt records.
+* **Decision**: Group all attempts sharing `(run_id, test_id)` into a single **Logical Execution**.
+* **Rationale**:
+  * If Attempt 1 (failed) and Attempt 2 (passed) were treated as two independent executions, the test's failure rate would be artificially halved, and the retry recovery would be lost.
+  * Preserving attempts as an ordered sequence within the logical execution allows accurate retry-recovery detection.
 * **Status**: Accepted.
 
 ---
 
-## DECISION-003: Definition of Retry-Recovery Event
+## DECISION-003: Defensive Duplicate Candidate Handling
 * **Date**: 2026-09-08
-* **Context**: Need an objective, mathematical definition for test flakiness.
-* **Decision**: Define a **Retry-Recovery Event** as any logical execution where `attempt 1` has status `failed` or `error` and a subsequent attempt (`attempt > 1`) has status `passed`.
-* **Rationale**:
-  * In modern CI, retries happen on the identical commit, codebase, and environment. A test failing and then passing without any code change is direct proof of non-deterministic (flaky) behavior.
-  * In the dataset, 592 out of 652 retried executions (~90.8%) recovered, validating retry-recovery as the primary flakiness signal.
+* **Context**: 1,085 records in `ci_runs.jsonl` share the composite key `(run_id, test_id, attempt)`.
+* **Decision**: Do not blindly delete records based solely on the composite key. Store all raw attempt rows in `test_runs` with unique row IDs, and only deduplicate when records are verified to be exact duplicates across all fields.
+* **Rationale**: Repeated composite keys in CI logs can represent distinct attempt events or log retries. Preserving raw evidence prevents unintentional data loss.
 * **Status**: Accepted.
 
 ---
 
-## DECISION-004: Explicit Separation of "Flaky" vs. "Likely Broken" Tests
+## DECISION-004: SQLite for Persistence
 * **Date**: 2026-09-09
-* **Context**: `tests/payments/test_payments_idempotency` had the highest failure count in the dataset (192 failures, 46.1% failure rate) but **0 retry recoveries**.
-* **Decision**: Do not classify persistently failing tests as "flaky". Classify tests with high failure rates and zero recoveries as **"Likely Broken"**.
+* **Context**: Selecting the database engine for storing 55,364 execution attempts and 121 test summaries.
+* **Decision**: Use SQLite (`backend/data/flaky_test_triage.db`) with native Node.js support (`node:sqlite`).
 * **Rationale**:
-  * Flaky tests are non-deterministic and pass on retry.
-  * Persistently failing tests represent genuine software regressions or broken test fixtures. Mixing them confuses triage engineers and misguides remediation efforts.
+  * **Zero Setup**: Embedded, single-file database requiring no daemon or external server.
+  * **Performance**: Sub-millisecond indexed queries over 55k rows.
+  * **Simplicity**: Completely self-contained and interview-friendly.
 * **Status**: Accepted.
 
 ---
 
-## DECISION-005: Rejection of Initial 4-Factor Additive Scoring Model
+## DECISION-005: Precomputed Summaries in `tests` Table
 * **Date**: 2026-09-09
-* **Context**: We evaluated a formula: $40\% \text{ Recovery Rate} + 25\% \text{ Fail Rate} + 20\% \text{ Impact} + 15\% \text{ Confidence}$.
-* **Decision**: Reject this model.
+* **Context**: How to serve the ranked leaderboard efficiently.
+* **Decision**: Maintain a precomputed `tests` summary table containing pre-calculated flakiness scores, rates, and classifications.
 * **Rationale**:
-  1. **Additive Baseline Distortion**: Standard tests running in all 447 runs received $+35$ base points purely for running, causing non-flaky tests with 0 recoveries to outrank actual flaky tests.
-  2. **Test Migration Penalization**: `test_checkout_flow` (v1) and `test_checkout_flow_v2` (v2) ran ~200 times each because of a mid-month migration. Their lower volume lowered their Impact score, incorrectly burying them at ranks #120 and #121 despite ~11% flake rates.
-  3. **Misranking Broken Tests**: The broken test `test_payments_idempotency` ranked #4 flaky due to failure rate and volume points.
-* **Status**: Rejected & Replaced.
+  * The unfiltered `GET /api/tests` dashboard query performs an instantaneous $O(1)$ indexed table scan rather than aggregating 55,000 rows on every HTTP request.
+* **Status**: Accepted.
 
 ---
 
-## DECISION-006: Adoption of Simplified 60/40 Flakiness Score & Classification Badges
+## DECISION-006: Execution-Level Filtering from `test_runs`
 * **Date**: 2026-09-09
-* **Context**: Need a transparent, explainable ranking metric tailored to the triage task.
+* **Context**: Supporting optional filters (`branch`, `from`, `to`) on `GET /api/tests`.
+* **Decision**: When execution-level filters (`branch` or date range) are provided, dynamically compute test metrics from the matching `test_runs` records while preserving complete logical executions.
+* **Rationale**:
+  * Branch and timestamp belong to individual executions. Filtering the precomputed summary table would return inaccurate static metrics.
+  * Grouping attempts into logical executions *before* applying date boundaries prevents retry-recovery events from being severed across midnight/date thresholds.
+* **Status**: Accepted.
+
+---
+
+## DECISION-007: Explicit UTC Timestamp Normalization
+* **Date**: 2026-09-09
+* **Context**: The dataset contains UTC timestamps ending in `Z`, timestamps with offsets (`+05:30`), and 7,411 suffix-less timestamps.
+* **Decision**: Explicitly parse any suffix-less timestamp as **UTC** (appending `'Z'`), and convert query parameter bounds (`from`, `to`) to exact UTC epoch millisecond boundaries.
+* **Rationale**: Eliminates reliance on the server host machine's local timezone, ensuring identical filtering results across any environment.
+* **Status**: Accepted.
+
+---
+
+## DECISION-008: Simplification to 60/40 Flakiness Scoring Formula
+* **Date**: 2026-09-09
+* **Context**: We evaluated an initial 4-factor model ($40\% \text{ Recovery} + 25\% \text{ Fail} + 20\% \text{ Impact} + 15\% \text{ Confidence}$).
+* **Decision**: Reject the 4-factor model in favor of $\text{Flakiness Score} = (0.60 \times \text{Recovery Rate} + 0.40 \times \text{Failure Rate}) \times 100$.
+* **Rationale**:
+  * Execution Impact and Evidence Confidence normalized to ~1.0 for almost all tests, creating an artificial $+35$ point floor that caused stable tests to outrank genuine flakes.
+  * The simplified 60/40 formula gives primary weight (60%) to non-deterministic recovery while capturing CI disruption (40%), and restores migrated tests (`test_checkout_flow` v1 and v2) to the top tier.
+* **Status**: Accepted.
+
+---
+
+## DECISION-009: Explicit Separation of "Likely Broken" vs. "Likely Flaky" Tests
+* **Date**: 2026-09-09
+* **Context**: `tests/payments/test_payments_idempotency` has a 46.09% failure rate but **0 retry recoveries**.
+* **Decision**: Categorize tests with high failure rates and zero recoveries as **"Likely Broken"** rather than "Likely Flaky".
+* **Rationale**: Persistently failing tests represent genuine software regressions or broken test fixtures. Separating them prevents triage engineers from misdiagnosing persistent bugs as intermittent flakes.
+* **Status**: Accepted.
+
+---
+
+## DECISION-010: REST API Design & Query Parameter for `test_id`
+* **Date**: 2026-09-09
+* **Context**: Designing `GET /api/tests` and `GET /api/tests/detail`.
 * **Decision**:
-  * **Formula**: $\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times \text{Failure/Error Rate}) \times 100$
-  * **Classification Rules**:
-    * **Likely Broken**: $\text{Recoveries} = 0 \text{ AND } \text{Failure Rate} \ge 10\%$
-    * **Likely Flaky**: $\text{Recovery Rate} \ge 5\%$
-    * **Possible Flake**: $\text{Recoveries} > 0 \text{ AND } \text{Recovery Rate} < 5\%$
-    * **Stable**: All others
+  * `GET /api/tests`: Returns ranked list and accepts query filters (`branch`, `from`, `to`, `classification`).
+  * `GET /api/tests/detail?test_id=...`: Returns summary metrics and execution history.
 * **Rationale**:
-  * Gives 60% priority to non-deterministic recovery while accounting for CI failure impact (40%).
-  * Eliminates artificial score floors.
-  * Restores migrated tests (`test_checkout_flow` v1 & v2) to ranks #5 and #7.
-  * Easy to explain to engineers and stakeholders during triage meetings.
+  * Test IDs contain slashes (e.g. `tests/auth/test_oauth_callback_timeout`). Using a query parameter (`?test_id=...`) avoids URL routing conflicts in Express without needing URL encoding hacks or wildcard route regexes.
 * **Status**: Accepted.
 
 ---
 
-## DECISION-007: Explainable Heuristics Over Machine Learning
+## DECISION-011: Independent Postman & Script Validation
 * **Date**: 2026-09-09
-* **Context**: Whether to use complex statistical models, clustering, or machine learning for triage ranking.
-* **Decision**: Use deterministic, arithmetic formulas with explicit classification rules.
-* **Rationale**:
-  * Flaky test triage requires transparent reasoning: developers must know *why* a test is flagged (e.g., "109 retries passed on attempt 2").
-  * Black-box ML models reduce trust, require extensive training pipelines, and add unnecessary complexity for a deterministic CI dataset.
-* **Status**: Accepted.
-
----
-
-## DECISION-008: SQLite Database Storage & Schema Architecture
-* **Date**: 2026-09-09
-* **Context**: Need a fast, persistent, self-contained relational storage solution for 55,364 test runs and 121 test summaries.
-* **Decision**: Use SQLite with two core tables:
-  1. `tests`: Aggregated test-level metrics (`test_id`, `flakiness_score`, `retry_recovery_rate`, `failure_error_rate`, `total_executions`, `retry_recoveries`, `classification`, `triage_status`, `updated_at`).
-  2. `test_runs`: Raw attempt-level execution history (`id`, `run_id`, `test_id`, `commit_sha`, `branch`, `worker`, `attempt`, `status`, `duration_ms`, `started_at`, `message`).
-* **Rationale**:
-  * **Zero Setup**: Embedded, single-file database (`flaky_test_triage.db`) requiring no external database servers or daemon processes.
-  * **Separation of Concerns**: `test_runs` retains the complete audit trail and raw attempt evidence, while `tests` provides instant $O(1)$ indexed reads for triage ranking.
-  * **Performance**: Indexing on `test_runs(test_id)` and `test_runs(run_id)` provides sub-millisecond retrieval for single-test historical deep-dives.
-* **Status**: Accepted.
-
----
-
-## DECISION-009: Ingestion Data Quality & Duplicate Handling
-* **Date**: 2026-09-09
-* **Context**: Raw dataset contains negative durations, null durations, and 1,085 duplicate composite keys.
-* **Decision**:
-  * Every raw line is assigned an autoincrementing integer `id` in `test_runs` so all 55,364 records are preserved without collision.
-  * Negative durations are sanitized to `null` on insertion.
-  * During summary calculation, candidate duplicate records sharing `(run_id, test_id, attempt)` are deduplicated to ensure logical metrics precisely match verified dataset counts.
+* **Context**: Verifying database and API correctness.
+* **Decision**: Validate database queries (`validate_db.js`) and API HTTP endpoints using dedicated automated test scripts and Postman test collections.
+* **Rationale**: Decouples API verification from internal implementation and provides proof of correct HTTP status codes, error payloads, and data formatting.
 * **Status**: Accepted.
