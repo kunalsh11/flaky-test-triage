@@ -255,7 +255,39 @@ function getTestDetail(testId) {
   };
 }
 
+function updateTriageStatus(testId, triageStatus) {
+  const db = getDatabase();
+
+  const checkStmt = db.prepare('SELECT test_id FROM tests WHERE test_id = ?');
+  const existing = checkStmt.get(testId);
+  if (!existing) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const updateStmt = db.prepare(`
+    UPDATE tests
+    SET triage_status = ?, updated_at = ?
+    WHERE test_id = ?
+  `);
+  updateStmt.run(triageStatus, now, testId);
+
+  const getStmt = db.prepare(`
+    SELECT 
+      test_id,
+      flakiness_score,
+      retry_recovery_rate,
+      failure_error_rate,
+      classification,
+      triage_status
+    FROM tests
+    WHERE test_id = ?
+  `);
+  return getStmt.get(testId);
+}
+
 module.exports = {
   getRankedTests,
   getTestDetail,
+  updateTriageStatus,
 };
