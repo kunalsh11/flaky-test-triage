@@ -7,17 +7,14 @@ function validateDatabase() {
   console.log('                                  STEP 6: SQLITE DATABASE VALIDATION CHECKS                                             ');
   console.log('=========================================================================================================================');
 
-  // Check 1: Total unique tests
   const testCountRow = db.prepare('SELECT COUNT(*) as count FROM tests').get();
   console.log(`\nCheck 1: Unique Tests Count`);
   console.log(`  Target: ~121 tests | Actual in DB: ${testCountRow.count}`);
 
-  // Check 2: Total raw test runs
   const runCountRow = db.prepare('SELECT COUNT(*) as count FROM test_runs').get();
   console.log(`\nCheck 2: Total Test Runs Ingested`);
   console.log(`  Target: 55,364 records | Actual in DB: ${runCountRow.count.toLocaleString()}`);
 
-  // Check 3 & 5: OAuth callback timeout verification
   const oauthTest = db.prepare('SELECT * FROM tests WHERE test_id = ?').get('tests/auth/test_oauth_callback_timeout');
   console.log(`\nCheck 3 & 5: OAuth Callback Timeout Test`);
   console.log(`  Test ID        : ${oauthTest?.test_id}`);
@@ -27,7 +24,6 @@ function validateDatabase() {
   console.log(`  Classification : ${oauthTest?.classification}`);
   console.log(`  Triage Status  : ${oauthTest?.triage_status}`);
 
-  // Check 4 & 6: Payments idempotency verification
   const paymentsTest = db.prepare('SELECT * FROM tests WHERE test_id = ?').get('tests/payments/test_payments_idempotency');
   console.log(`\nCheck 4 & 6: Payments Idempotency Test`);
   console.log(`  Test ID        : ${paymentsTest?.test_id}`);
@@ -37,7 +33,6 @@ function validateDatabase() {
   console.log(`  Classification : ${paymentsTest?.classification}`);
   console.log(`  Triage Status  : ${paymentsTest?.triage_status}`);
 
-  // Check 7: Genuine Retry Recovery Example Verification
   const retryPair = db.prepare(`
     SELECT r1.run_id, r1.test_id
     FROM test_runs r1
@@ -69,12 +64,10 @@ function validateDatabase() {
     console.log('  No retry-recovery pair found in test_runs.');
   }
 
-  // Check 8: Default triage_status verification
   const untriagedCount = db.prepare("SELECT COUNT(*) as count FROM tests WHERE triage_status = 'untriaged'").get();
   console.log(`\nCheck 8: Default Triage Status`);
   console.log(`  Total tests with triage_status = 'untriaged': ${untriagedCount.count} / ${testCountRow.count}`);
 
-  // Check 9: Detailed history retrieval for a single test
   const singleTestHistory = db.prepare(`
     SELECT run_id, branch, worker, attempt, status, duration_ms, started_at
     FROM test_runs
@@ -87,7 +80,6 @@ function validateDatabase() {
     console.log(`    - Run: ${h.run_id} | Branch: ${h.branch.padEnd(16)} | Worker: ${h.worker} | Att: ${h.attempt} | Status: ${h.status.padEnd(6)} | ${h.duration_ms}ms`);
   });
 
-  // Top 10 Tests Overview
   const topTests = db.prepare(`
     SELECT test_id, flakiness_score, retry_recoveries, total_executions, retry_recovery_rate, failure_error_rate, classification, triage_status
     FROM tests

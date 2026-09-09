@@ -4,7 +4,6 @@ function parseTimestampToUtcMs(timestampStr) {
   if (!timestampStr) return null;
   let cleanStr = timestampStr.trim();
 
-  // If no timezone offset is present (no 'Z' and no +HH:MM / -HH:MM), treat as UTC
   if (!cleanStr.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(cleanStr)) {
     cleanStr = cleanStr + 'Z';
   }
@@ -31,7 +30,6 @@ function getRankedTests(filters = {}) {
 
   const hasExecutionFilters = Boolean(branch || from || to);
 
-  // Fast-path: When no execution-level filters are requested, read precomputed summaries
   if (!hasExecutionFilters) {
     let query = `
       SELECT 
@@ -54,7 +52,6 @@ function getRankedTests(filters = {}) {
     return db.prepare(query).all(...params);
   }
 
-  // Execution-level filtering: Query raw runs to calculate filtered metrics
   const sql = `
     SELECT 
       tr.id,
@@ -75,7 +72,6 @@ function getRankedTests(filters = {}) {
   const fromUtcMs = parseDateBoundaryToUtcMs(from, false);
   const toUtcMs = parseDateBoundaryToUtcMs(to, true);
 
-  // Step 1: Group ALL raw attempts by logical execution (run_id + test_id)
   const logicalExecutionsMap = new Map();
   const triageStatusMap = new Map();
   const seenExactRecords = new Set();
@@ -85,7 +81,6 @@ function getRankedTests(filters = {}) {
       triageStatusMap.set(row.test_id, row.triage_status || 'untriaged');
     }
 
-    // Only filter out exact duplicate rows where all relevant fields match
     const exactRecordKey = `${row.run_id}:::${row.test_id}:::${row.attempt}:::${row.status}:::${row.started_at}`;
     if (seenExactRecords.has(exactRecordKey)) {
       continue;
@@ -110,7 +105,6 @@ function getRankedTests(filters = {}) {
     });
   }
 
-  // Step 2: Apply branch & date boundaries to each logical execution as a complete unit
   const testStatsMap = new Map();
 
   for (const execution of logicalExecutionsMap.values()) {
@@ -118,12 +112,10 @@ function getRankedTests(filters = {}) {
 
     const firstAttempt = execution.attempts[0];
 
-    // Branch filter
     if (branch && execution.branch !== branch) {
       continue;
     }
 
-    // Date range filter based on start timestamp of Attempt 1 in UTC
     if (fromUtcMs !== null || toUtcMs !== null) {
       const executionStartMs = parseTimestampToUtcMs(firstAttempt.started_at);
       if (executionStartMs !== null) {
@@ -132,7 +124,6 @@ function getRankedTests(filters = {}) {
       }
     }
 
-    // Step 3: Compute test-level metrics across filtered complete logical executions
     const testId = execution.test_id;
     if (!testStatsMap.has(testId)) {
       testStatsMap.set(testId, {
@@ -170,7 +161,6 @@ function getRankedTests(filters = {}) {
     }
   }
 
-  // Step 4: Calculate flakiness scores and classifications
   const results = [];
 
   for (const stats of testStatsMap.values()) {
@@ -191,7 +181,6 @@ function getRankedTests(filters = {}) {
       testClassification = 'Stable';
     }
 
-    // Classification filter
     if (classification && testClassification !== classification) {
       continue;
     }
