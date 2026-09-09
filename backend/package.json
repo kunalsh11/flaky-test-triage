@@ -1,0 +1,12 @@
+{
+  "name": "flaky-test-triage-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Flaky Test Triage tool",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
