@@ -1,60 +1,67 @@
 # AI Work Log
 
-This document records how AI tools were utilized during the development of the Flaky Test Triage project (Steps 1–7D), including the division of responsibilities, accepted outputs, and rejected or refined suggestions.
+This document records the division of work between the human engineer and AI tools (Google Antigravity and ChatGPT) during the Flaky Test Triage project, detailing effective prompts, rejected outputs, and debugging takeaways.
 
 ---
 
-## 1. AI Tooling Used
-* **Google Antigravity**: Primary agentic coding assistant used for codebase exploration, code scaffolding, database ingestion implementation, and backend REST API development.
-* **ChatGPT**: Secondary advisor and reviewer used for architectural design sanity checks and requirements review.
+## 1. How I Used AI
+
+### Human Engineer Responsibilities
+* **Data Inspection**: Audited the raw dataset (`ci_runs.jsonl`), identifying anomalies (missing/negative durations, composite key duplicates, mixed timestamps).
+* **Domain Modeling**: Defined the concept of a **Logical Execution** (`run_id + test_id`) and formulated the retry-recovery definition.
+* **Algorithm Design**: Evaluated, validated, and finalized the 60/40 flakiness scoring model and classification thresholds.
+* **Code Review & Auditing**: Inspected all generated JavaScript and JSX code to verify edge-case handling and performance.
+* **Testing & Verification**: Executed automated validation scripts, Postman test collections, and browser UI tests.
+* **Engineering Decisions**: Made all final architectural and product decisions (e.g. SQLite storage, query parameters for test IDs, manual triage workflow).
+
+### AI Assistant Responsibilities
+* **Scaffolding**: Generated directory structures and initial boilerplate for Express and Vite.
+* **Pipeline Implementation**: Implemented the SQLite streaming ingestion pipeline using Node.js built-in `node:sqlite`.
+* **API Route & Service Layer**: Built Express route handlers and SQL query aggregations for test rankings and history.
+* **Frontend Components**: Built the React UI components (`TestTable`, `FilterBar`, `TestDetail`) and CSS styling.
+
+> **Key Rule**: AI output was treated as draft proposals that were strictly reviewed, debugged, and tested against actual data rather than blindly accepted.
 
 ---
 
-## 2. Division of Responsibilities
+## 2. Effective AI Sessions
 
-### Human Engineer
-* Inspected and interpreted the raw CI dataset and identified key production anomalies.
-* Reviewed and audited all AI-generated code before execution.
-* Executed analysis scripts and validated mathematical formulas against real test examples.
-* Tested REST API endpoints and verified JSON responses using Postman.
-* Made all final architectural, scoring, database, and classification decisions.
-* Managed Git version control, commits, and GitHub repository synchronization.
+### Session 1: SQLite Streaming Ingestion & Database Validation
+* **Prompt Summary**: Instructed the AI to create a streaming ingestion script using `node:readline` and Node's built-in `node:sqlite` to ingest 55,364 JSONL lines into `test_runs` and populate precomputed metrics in `tests` without running out of memory.
+* **Why Effective**: Specifying exact table schemas, type coercion rules (`null` for negative/missing durations), and a separate `validate_db.js` script with 10 explicit criteria produced an efficient, self-verifying ingestion pipeline on the first try.
 
-### AI Assistant (Antigravity & ChatGPT)
-* Generated initial file scaffolding and project structure.
-* Created zero-dependency data exploration and pattern analysis scripts.
-* Implemented the SQLite streaming ingestion pipeline (`node:sqlite`).
-* Built Express backend route handlers and database service modules.
-* Implemented the single-test detail endpoint (`GET /api/tests/detail`).
-* Assisted in diagnosing and refining edge cases during validation.
+### Session 2: REST API with Preserved Logical Executions
+* **Prompt Summary**: Asked the AI to build `GET /api/tests` supporting optional `branch`, `classification`, `from`, and `to` filters, with a strict constraint: grouping attempts into logical executions must occur *before* applying date boundaries to avoid severing midnight retries.
+* **Why Effective**: Clear behavioral requirements prevented subtle data corruption bugs where a midnight retry attempt might have been excluded from its initial failure.
+
+### Session 3: React Dashboard & Triage Actions
+* **Prompt Summary**: Instructed the AI to build a clean single-page React frontend with a ranked table, filter bar, single-test detail view, and user-controlled triage actions (`Mark as Triaged`, `Quarantine`, `Reset`) calling `PATCH /api/tests/detail/triage`.
+* **Why Effective**: Constraining the implementation to Vanilla CSS, native fetch, and zero external UI libraries kept the bundle lightweight, fast, and beginner-friendly.
 
 ---
 
-## 3. Key AI Suggestions Rejected, Refined, or Corrected
+## 3. AI Output I Rejected or Fixed
 
-### 1. Misleading Initial Retry Validation in `validate_db.js`
-* **What Happened**: The initial AI-generated database check for retry attempts queried a run with `attempt = 2`, but printed the first 4 records of that run (which happened to be four `attempt: 1` duplicate candidates for `test_admin_case_00`), failing to prove that an `attempt 2` record existed.
-* **Correction**: The human reviewer rejected this output and instructed the AI to write a specific SQL query that joins `attempt: 1` (`failed`) with `attempt: 2` (`passed`) on the identical `run_id + test_id`, proving true retry-recovery storage (e.g., `tests/search/test_fuzzy_ranking`).
+### Example 1: Misleading Initial Retry Validation in `validate_db.js`
+* **What Happened**: The AI generated a test check that searched for `attempt = 2`, but printed the first 4 rows of the matching run. These rows happened to be four `attempt: 1` duplicate candidates for `test_admin_case_00`, failing to prove that an `attempt: 2` record existed.
+* **Why Rejected**: Different run IDs with attempt 1 are separate executions. A valid retry recovery requires the same `run_id` and `test_id` with an `attempt: 1` failure followed by a later `attempt: 2` pass.
+* **What I Changed**: Replaced the check with a SQL self-join that explicitly asserts an Attempt 1 `failed`/`error` is followed by an Attempt 2 `passed` for the exact same `(run_id, test_id)` (e.g. `tests/search/test_fuzzy_ranking`).
 
-### 2. Over-Engineered 4-Factor Additive Scoring Model
-* **What Happened**: An initial conceptual formula proposed combining four additive signals:
-  $$\text{Score} = 40\% \text{ Recovery Rate} + 25\% \text{ Fail Rate} + 20\% \text{ Impact} + 15\% \text{ Confidence}$$
-* **Why Rejected**: When run against the actual dataset, Execution Impact and Evidence Confidence normalized to ~1.0 for almost all tests, creating a static $+35$ point baseline floor. This caused stable tests to outrank actual flakes, penalized migrated tests (`test_checkout_flow` v1 and v2) down to ranks #120 and #121, and inflated the broken test `test_payments_idempotency` to rank #4.
-* **Correction**: Replaced with the validated, explainable formula:
-  $$\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times \text{Failure/Error Rate}) \times 100$$
-  and introduced explicit classification states (`Likely Broken`, `Likely Flaky`, `Possible Flake`, `Stable`).
+### Example 2: Flawed 4-Factor Scoring Model
+* **What Happened**: The AI proposed a 4-factor formula combining Recovery Rate (40%), Failure Rate (25%), Execution Impact (20%), and Evidence Confidence (15%).
+* **Why Rejected**: When run against the 55k dataset, Execution Impact and Confidence normalized to ~1.0 for almost every test, creating a flat +35 point baseline. This penalized legitimate flaky tests (like migrated checkout tests) down to ranks #120 and #121, while ranking the broken test `test_payments_idempotency` at #4 despite 0 retry recoveries.
+* **What I Changed**: Replaced it with the simpler, highly explainable formula `60% Retry Recovery + 40% Failure/Error Rate` and introduced the `Likely Broken` category.
 
-### 3. Overly Aggressive Duplicate Skipping
-* **What Happened**: An early iteration of the service filtering logic skipped records if a composite key `(run_id, test_id, attempt)` had already been encountered.
-* **Why Rejected**: The 1,085 duplicate candidates in the dataset were not proven to be identical JSON records. Blindly dropping records based solely on the composite key could discard valid attempt evidence.
-* **Correction**: Refined the logic to preserve all raw `test_runs` rows and only skip records when verified to be exact duplicates across all relevant fields (`run_id`, `test_id`, `attempt`, `status`, `started_at`).
-
-### 4. Date Filtering Severing Midnight Retries
-* **What Happened**: An initial filter implementation filtered individual `test_runs` rows by date before grouping into logical executions.
-* **Why Rejected**: An execution where Attempt 1 ran at `23:59:50` and Attempt 2 ran at `00:00:10` would have Attempt 2 dropped by the date boundary, corrupting the retry-recovery metric.
-* **Correction**: Grouped attempts by `run_id + test_id` *first*, and applied date range boundaries to the logical execution as a complete unit based on Attempt 1's timestamp.
+### Example 3: Overly Aggressive Duplicate Skipping
+* **What Happened**: An early AI suggestion proposed skipping records during ingestion if the composite key `(run_id, test_id, attempt)` had already been seen.
+* **Why Rejected**: The 1,085 duplicate composite keys in CI logs were not verified exact duplicates; dropping them indiscriminately risked discarding valid execution evidence.
+* **What I Changed**: Preserved all raw attempt rows in `test_runs` with unique IDs and only filtered records during calculation if all fields matched identically.
 
 ---
 
-## 4. Guiding Principle
-> **"AI was used to accelerate implementation, but final technical decisions were based on dataset behavior and were manually validated."**
+## 4. Things That Did Not Work
+
+* **Initial Retry Query**: The first database validation query printed false retry evidence by mixing different executions.
+* **Initial 4-Factor Scoring**: Lacked discrimination across the test suite and elevated broken tests over true flakes.
+* **Rigid Postman Assertions**: A Postman test script asserting `data.length === 121` failed on valid filtered requests (e.g., date ranges returning 120 or 0 items); updated to assert dynamic array responses.
+* **Occupied Port 3000**: The backend initially failed to start because port 3000 was held by an orphan process; diagnosed using PowerShell port queries and terminated the lingering process.
