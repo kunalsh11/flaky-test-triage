@@ -80,7 +80,7 @@ router.get('/detail', (req, res) => {
 
 router.get('/', (req, res) => {
   try {
-    const { branch, from, to, classification } = req.query;
+    const { branch, from, to, classification, suite } = req.query;
 
     if (classification && !VALID_CLASSIFICATIONS.has(classification)) {
       return res.status(400).json({
@@ -115,6 +115,7 @@ router.get('/', (req, res) => {
       from: from ? from.trim() : undefined,
       to: to ? to.trim() : undefined,
       classification: classification ? classification.trim() : undefined,
+      suite: suite ? suite.trim() : undefined,
     };
 
     const tests = getRankedTests(filters);

@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { getRankedTests } from '../services/api';
 import TestTable from '../components/TestTable';
 import FilterBar from '../components/FilterBar';
@@ -9,6 +9,7 @@ export default function Dashboard({ onSelectTest }) {
   const [error, setError] = useState(null);
 
   const [branch, setBranch] = useState('All');
+  const [suite, setSuite] = useState('All Suites');
   const [classification, setClassification] = useState('All');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -33,6 +34,7 @@ export default function Dashboard({ onSelectTest }) {
   function handleApply() {
     fetchTests({
       branch: branch !== 'All' ? branch : undefined,
+      suite: suite !== 'All Suites' && suite !== 'All' ? suite : undefined,
       classification: classification !== 'All' ? classification : undefined,
       from: from || undefined,
       to: to || undefined,
@@ -41,6 +43,7 @@ export default function Dashboard({ onSelectTest }) {
 
   function handleReset() {
     setBranch('All');
+    setSuite('All Suites');
     setClassification('All');
     setFrom('');
     setTo('');
@@ -57,6 +60,8 @@ export default function Dashboard({ onSelectTest }) {
       <FilterBar
         branch={branch}
         onBranchChange={setBranch}
+        suite={suite}
+        onSuiteChange={setSuite}
         classification={classification}
         onClassificationChange={setClassification}
         from={from}

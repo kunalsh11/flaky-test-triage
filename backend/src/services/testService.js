@@ -26,7 +26,7 @@ function parseDateBoundaryToUtcMs(dateStr, isEndOfDay = false) {
 
 function getRankedTests(filters = {}) {
   const db = getDatabase();
-  const { branch, from, to, classification } = filters;
+  const { branch, from, to, classification, suite } = filters;
 
   const hasExecutionFilters = Boolean(branch || from || to);
 
@@ -49,7 +49,16 @@ function getRankedTests(filters = {}) {
     }
 
     query += ` ORDER BY flakiness_score DESC`;
-    return db.prepare(query).all(...params);
+    const rows = db.prepare(query).all(...params);
+
+    if (suite) {
+      return rows.filter((row) => {
+        const segments = row.test_id.split('/');
+        return segments.length > 1 && segments[1] === suite;
+      });
+    }
+
+    return rows;
   }
 
   const sql = `
@@ -185,6 +194,13 @@ function getRankedTests(filters = {}) {
       continue;
     }
 
+    if (suite) {
+      const segments = stats.test_id.split('/');
+      if (segments.length <= 1 || segments[1] !== suite) {
+        continue;
+      }
+    }
+
     results.push({
       test_id: stats.test_id,
       flakiness_score: Number(flakinessScore.toFixed(2)),
@@ -247,8 +263,7 @@ function getTestDetail(testId) {
 function updateTriageStatus(testId, triageStatus) {
   const db = getDatabase();
 
-  const checkStmt = db.prepare('SELECT test_id FROM tests WHERE test_id = ?');
-  const existing = checkStmt.get(testId);
+  const existing = db.prepare(`SELECT test_id FROM tests WHERE test_id = ?`).get(testId);
   if (!existing) {
     return null;
   }
@@ -259,24 +274,16 @@ function updateTriageStatus(testId, triageStatus) {
     SET triage_status = ?, updated_at = ?
     WHERE test_id = ?
   `);
+
   updateStmt.run(triageStatus, now, testId);
 
-  const getStmt = db.prepare(`
-    SELECT 
-      test_id,
-      flakiness_score,
-      retry_recovery_rate,
-      failure_error_rate,
-      classification,
-      triage_status
-    FROM tests
-    WHERE test_id = ?
-  `);
-  return getStmt.get(testId);
+  return db.prepare(`SELECT * FROM tests WHERE test_id = ?`).get(testId);
 }
 
 module.exports = {
   getRankedTests,
   getTestDetail,
   updateTriageStatus,
+  parseTimestampToUtcMs,
+  parseDateBoundaryToUtcMs,
 };

@@ -60,10 +60,10 @@ $$\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times
 
 * **Ranked Flaky Test Dashboard**: Live leaderboard sorted by flakiness score with visual rank, rates, and status badges.
 * **Dashboard Filters**:
-  * **Branch**: Filter executions by `main` or specific feature branches (`feature/PLAT-104`, `101`–`117`).
+  * **Branch**: Filter executions by `main` or specific feature branches (`feature/PLAT-101` through `feature/PLAT-117`).
+  * **Suite**: Filter by test suite (`auth`, `payments`, `notifications`, `checkout`, `admin`, `search`). The suite is derived dynamically from the second segment of `test_id` (`test_id.split('/')[1]`) without requiring a redundant database column.
   * **Classification**: Filter by `Likely Flaky`, `Likely Broken`, `Possible Flake`, or `Stable`.
   * **Date Range**: Filter executions between `From` and `To` dates (`YYYY-MM-DD`).
-  *(Note: Suite filtering was not implemented because the dataset does not contain an explicit test suite field.)*
 * **Single Test Detail & History**: Inspect test metrics and chronological CI attempt logs (status, branch, runner, duration, timestamp, error messages).
 * **Retry Evidence**: Clear visual indicators (`Attempt 1` $\rightarrow$ `Attempt 2`) showing why a test was flagged as flaky.
 * **User-Controlled Triage Actions**: Engineers manually set status to **Mark as Triaged**, **Quarantine**, or **Reset to Untriaged**.
@@ -81,30 +81,30 @@ $$\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times
 
 ```text
 flaky-test-triage/
-├── backend/
-│   ├── data/                 # SQLite database storage
-│   ├── src/
-│   │   ├── db/               # DB connection, schema & ingestion
-│   │   ├── routes/           # Express REST route handlers
-│   │   ├── services/         # Business logic & flakiness calculations
-│   │   └── server.js         # Server entry point (port 3000)
-│   └── package.json
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # UI components (TestTable, FilterBar, TestDetail)
-│   │   ├── pages/            # Page layouts (Dashboard)
-│   │   ├── services/         # Client API service
-│   │   ├── App.jsx           # Main application component
-│   │   └── main.jsx          # React entry point
-│   ├── index.html
-│   ├── vite.config.js        # Vite config with /api proxy
-│   └── package.json
-├── data/
-│   └── ci_runs.jsonl         # Raw CI execution dataset (55,364 lines)
-├── README.md
-├── ARCHITECTURE.md
-├── DECISION_LOG.md
-└── AI_WORK_LOG.md
+|-- backend/
+|   |-- data/                 # SQLite database storage
+|   |-- src/
+|   |   |-- db/               # DB connection, schema & ingestion
+|   |   |-- routes/           # Express REST route handlers
+|   |   |-- services/         # Business logic & flakiness calculations
+|   |   `-- server.js         # Server entry point (port 3000)
+|   `-- package.json
+|-- frontend/
+|   |-- src/
+|   |   |-- components/       # UI components (TestTable, FilterBar, TestDetail)
+|   |   |-- pages/            # Page layouts (Dashboard)
+|   |   |-- services/         # Client API service
+|   |   |-- App.jsx           # Main application component
+|   |   `-- main.jsx          # React entry point
+|   |-- index.html
+|   |-- vite.config.js        # Vite config with /api proxy
+|   `-- package.json
+|-- data/
+|   `-- ci_runs.jsonl         # Raw CI execution dataset (55,364 lines)
+|-- README.md
+|-- ARCHITECTURE.md
+|-- DECISION_LOG.md
+`-- AI_WORK_LOG.md
 ```
 
 ---
@@ -156,7 +156,7 @@ During analysis of `data/ci_runs.jsonl`, several edge cases were identified and 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/health` | Health check endpoint (`{"status": "ok"}`) |
-| `GET` | `/api/tests` | Returns ranked tests. Supports `branch`, `classification`, `from`, `to` |
+| `GET` | `/api/tests` | Returns ranked tests. Supports `branch`, `suite`, `classification`, `from`, `to` |
 | `GET` | `/api/tests/detail?test_id=<id>` | Returns summary metrics and execution history for one test |
 | `PATCH` | `/api/tests/detail/triage?test_id=<id>` | Updates triage status (`untriaged`, `triaged`, `quarantined`) |
 
@@ -168,7 +168,6 @@ To keep the application focused and robust within the scope:
 * **No Authentication / RBAC**: Designed as an internal developer tool for trusted networks.
 * **No External Database Server**: Embedded SQLite was used instead of PostgreSQL/MySQL to avoid external setup dependencies.
 * **No Automatic CI Disabling**: Quarantine is a tracking state, not a direct CI mutation.
-* **No Suite Filter**: The dataset does not include a suite metadata property.
 * **No Heavy Charting Libraries**: Used clean tabular data and badge indicators to keep the UI lightweight and scannable.
 
 ---

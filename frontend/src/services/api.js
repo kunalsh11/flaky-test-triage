@@ -1,7 +1,8 @@
-﻿export async function getRankedTests(filters = {}) {
+export async function getRankedTests(filters = {}) {
   const params = new URLSearchParams();
   if (filters.branch && filters.branch !== 'All') params.append('branch', filters.branch);
   if (filters.classification && filters.classification !== 'All') params.append('classification', filters.classification);
+  if (filters.suite && filters.suite !== 'All' && filters.suite !== 'All Suites') params.append('suite', filters.suite);
   if (filters.from) params.append('from', filters.from);
   if (filters.to) params.append('to', filters.to);
 

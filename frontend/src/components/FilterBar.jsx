@@ -22,6 +22,16 @@ const BRANCH_OPTIONS = [
   'feature/PLAT-117',
 ];
 
+const SUITE_OPTIONS = [
+  'All Suites',
+  'auth',
+  'payments',
+  'notifications',
+  'checkout',
+  'admin',
+  'search',
+];
+
 const CLASSIFICATION_OPTIONS = [
   'All',
   'Likely Flaky',
@@ -33,6 +43,8 @@ const CLASSIFICATION_OPTIONS = [
 export default function FilterBar({
   branch,
   onBranchChange,
+  suite,
+  onSuiteChange,
   classification,
   onClassificationChange,
   from,
@@ -58,6 +70,23 @@ export default function FilterBar({
             {BRANCH_OPTIONS.map((b) => (
               <option key={b} value={b}>
                 {b}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label htmlFor="filter-suite" className="filter-label">Suite:</label>
+          <select
+            id="filter-suite"
+            className="filter-select"
+            value={suite}
+            onChange={(e) => onSuiteChange(e.target.value)}
+            disabled={loading}
+          >
+            {SUITE_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
               </option>
             ))}
           </select>
