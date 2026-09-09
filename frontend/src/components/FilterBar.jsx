@@ -1,26 +1,25 @@
-﻿import React from 'react';
+import React from 'react';
 
 const BRANCH_OPTIONS = [
   'All',
   'main',
+  'feature/PLAT-101',
+  'feature/PLAT-102',
+  'feature/PLAT-103',
   'feature/PLAT-104',
-  '101',
-  '102',
-  '103',
-  '104',
-  '105',
-  '106',
-  '107',
-  '108',
-  '109',
-  '110',
-  '111',
-  '112',
-  '113',
-  '114',
-  '115',
-  '116',
-  '117',
+  'feature/PLAT-105',
+  'feature/PLAT-106',
+  'feature/PLAT-107',
+  'feature/PLAT-108',
+  'feature/PLAT-109',
+  'feature/PLAT-110',
+  'feature/PLAT-111',
+  'feature/PLAT-112',
+  'feature/PLAT-113',
+  'feature/PLAT-114',
+  'feature/PLAT-115',
+  'feature/PLAT-116',
+  'feature/PLAT-117',
 ];
 
 const CLASSIFICATION_OPTIONS = [
