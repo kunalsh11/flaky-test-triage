@@ -1,4 +1,4 @@
-﻿.app {
+.app {
   min-height: 100vh;
   padding: 2.5rem 2rem;
 }
@@ -491,6 +491,79 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.history-filter-bar {
+  padding: 0.85rem 1.25rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.history-filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.history-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.history-search-group {
+  flex: 1;
+  min-width: 220px;
+}
+
+.history-filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.history-filter-select,
+.history-filter-input {
+  padding: 0.4rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.825rem;
+  color: #1e293b;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.history-filter-select:focus,
+.history-filter-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+.history-filter-actions {
+  display: flex;
+  align-items: center;
+}
+
+.btn-history-reset {
+  padding: 0.4rem 0.75rem;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-history-reset:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
 }
 
 .card-header h2 {
