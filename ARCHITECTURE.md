@@ -51,7 +51,9 @@ The SQLite database (`backend/data/flaky_test_triage.db`) separates summary metr
 | flakiness_score         | REAL         | 0.00 - 100.00 |
 | retry_recovery_rate     | REAL         | 0.0 - 1.0     |
 | failure_error_rate      | REAL         | 0.0 - 1.0     |
-| total_executions        | INTEGER      | Total runs    |
+| total_executions        | INTEGER      | All execs     |
+| executed_executions     | INTEGER      | Non-skipped   |
+| skipped_executions      | INTEGER      | Fully skipped |
 | retry_recoveries        | INTEGER      | Pass on retry |
 | classification          | TEXT         | Badge category|
 | triage_status           | TEXT         | untriaged/... |
@@ -124,6 +126,17 @@ Every rate is a fraction of **logical executions**, so `failure_error_rate` is b
 An execution that fails on attempt 1 and fails again on attempt 2 counts as **one** failing
 execution, not two. 52 executions in the dataset have this shape, and all of them belong to
 `tests/payments/test_payments_idempotency`.
+
+### Counting Rule: Skipped Executions Are Not Scored
+Rates divide by **executed** executions — total minus the executions skipped on every
+attempt — because a test that never ran can demonstrate neither flakiness nor stability.
+3,181 of the 53,635 executions are fully skipped, concentrated in the `admin` suite (up to
+38% of a single test's executions). Leaving them in the denominator scored those tests as
+artificially stable: `test_bulk_export` ranked #9 instead of #4.
+
+`total_executions` still counts every logical execution and the `tests` table stores
+`executed_executions` and `skipped_executions` alongside it, so the split is auditable and
+the dataset totals are unchanged.
 
 ### Ordering Rule: Attempt Number, Never Timestamp
 Attempts are ordered by `attempt` number, never by `started_at`:

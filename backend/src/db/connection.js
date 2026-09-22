@@ -14,6 +14,7 @@ function getDatabase(customPath) {
 
   const db = new DatabaseSync(dbPath);
   initDatabase(db);
+  migrateDatabase(db);
   return db;
 }
 
@@ -25,6 +26,8 @@ function initDatabase(db) {
       retry_recovery_rate REAL NOT NULL,
       failure_error_rate REAL NOT NULL,
       total_executions INTEGER NOT NULL,
+      executed_executions INTEGER NOT NULL DEFAULT 0,
+      skipped_executions INTEGER NOT NULL DEFAULT 0,
       retry_recoveries INTEGER NOT NULL,
       classification TEXT NOT NULL,
       triage_status TEXT NOT NULL DEFAULT 'untriaged',
@@ -52,8 +55,34 @@ function initDatabase(db) {
   `);
 }
 
+
+/**
+ * Adds columns introduced after the first release.
+ *
+ * `CREATE TABLE IF NOT EXISTS` leaves an existing table untouched, so a database
+ * created before these columns existed would otherwise keep a stale shape and
+ * fail on insert. Checked per column and safe to run on every connection.
+ */
+function migrateDatabase(db) {
+  const existing = new Set(
+    db.prepare(`PRAGMA table_info(tests)`).all().map((col) => col.name)
+  );
+
+  const additions = [
+    ['executed_executions', `ALTER TABLE tests ADD COLUMN executed_executions INTEGER NOT NULL DEFAULT 0`],
+    ['skipped_executions', `ALTER TABLE tests ADD COLUMN skipped_executions INTEGER NOT NULL DEFAULT 0`],
+  ];
+
+  for (const [column, sql] of additions) {
+    if (!existing.has(column)) {
+      db.exec(sql);
+    }
+  }
+}
+
 module.exports = {
   getDatabase,
   initDatabase,
+  migrateDatabase,
   defaultDbPath,
 };

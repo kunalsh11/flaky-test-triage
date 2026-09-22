@@ -44,9 +44,11 @@ Because both attempts execute on the exact same commit, branch, and environment,
 ### Scoring Formula
 $$\text{Flakiness Score} = (0.60 \times \text{Retry Recovery Rate} + 0.40 \times \text{Failure/Error Rate}) \times 100$$
 
-* **Retry Recovery Rate (60% weight)**: $\frac{\text{Retry Recoveries}}{\text{Total Logical Executions}}$ — captures empirical non-determinism.
-* **Failure/Error Rate (40% weight)**: $\frac{\text{Executions with Failures or Errors}}{\text{Total Logical Executions}}$ — captures overall pipeline disruption.
+* **Retry Recovery Rate (60% weight)**: $\frac{\text{Retry Recoveries}}{\text{Executed Executions}}$ — captures empirical non-determinism.
+* **Failure/Error Rate (40% weight)**: $\frac{\text{Executions with Failures or Errors}}{\text{Executed Executions}}$ — captures overall pipeline disruption.
 * **Score Range**: `0.00` to `100.00`.
+
+> **Executed Executions**: both rates are measured over logical executions in which the test actually ran — total executions minus the ones skipped on every attempt. A skipped execution never produced a result, so it can demonstrate neither flakiness nor stability. Counting skips in the denominator silently deflates the score of any suite that skips often: the `admin` suite is skipped in up to **38%** of its executions, which pushed `test_bulk_export` (skipped in 34.5% of its executions) down to rank #9 despite a genuine 15.4% retry-recovery rate — it now ranks #4. Across the dataset, 3,181 of 53,635 executions are skipped. `total_executions` still records every execution, skipped included, so the audit trail is unchanged.
 
 ### Test Classifications
 1. **Likely Broken**: Retry Recoveries = 0 **AND** Failure/Error Rate $\ge 10\%$.
@@ -149,6 +151,7 @@ During analysis of `data/ci_runs.jsonl`, several edge cases were identified and 
 3. **Timezone Normalization**: Suffix-less timestamps (e.g. `2026-07-15T10:00:00`) are explicitly treated as **UTC** (`+ 'Z'`) to prevent host timezone shifts.
 4. **Missing & Negative Durations**: 5,377 missing durations and 158 negative durations (e.g. `-250ms`) are stored safely as `null` to avoid corrupting duration metrics.
 5. **Duplicate Logging Candidates**: 1,085 duplicate-key entries in CI logs are preserved and only deduplicated when exact field values match.
+6. **Skipped Executions**: 3,181 executions where the test was skipped on every attempt are excluded from the rate denominator (but retained in `total_executions`), so suites that skip frequently are not scored as artificially stable.
 
 ---
 

@@ -126,11 +126,26 @@ function classifyTest(retryRecoveries, recoveryRate, failureErrorRate) {
   return 'Stable';
 }
 
-/** Turns accumulated per-execution totals into the stored/served metrics. */
+/**
+ * Turns accumulated per-execution totals into the stored/served metrics.
+ *
+ * Rates are measured over EXECUTED executions — total minus the ones where the
+ * test was skipped on every attempt. A skipped execution never ran, so it can
+ * demonstrate neither flakiness nor stability; leaving it in the denominator
+ * silently deflates every rate for suites that skip often (the admin suite is
+ * skipped in up to 38% of its executions).
+ *
+ * `total_executions` still reports every logical execution, skipped included,
+ * so the audit trail and the dataset totals are unchanged.
+ */
 function summarizeTestStats(stats) {
-  const execs = stats.total_executions;
-  const recoveryRate = execs > 0 ? stats.retry_recoveries / execs : 0;
-  const failureErrorRate = execs > 0 ? stats.failing_executions / execs : 0;
+  const totalExecutions = stats.total_executions;
+  const executedExecutions = totalExecutions - stats.skips;
+
+  const recoveryRate =
+    executedExecutions > 0 ? stats.retry_recoveries / executedExecutions : 0;
+  const failureErrorRate =
+    executedExecutions > 0 ? stats.failing_executions / executedExecutions : 0;
 
   const flakinessScore =
     (SCORE_WEIGHTS.retryRecoveryRate * recoveryRate +
@@ -141,7 +156,9 @@ function summarizeTestStats(stats) {
     flakiness_score: Number(flakinessScore.toFixed(2)),
     retry_recovery_rate: Number(recoveryRate.toFixed(4)),
     failure_error_rate: Number(failureErrorRate.toFixed(4)),
-    total_executions: execs,
+    total_executions: totalExecutions,
+    executed_executions: executedExecutions,
+    skipped_executions: stats.skips,
     retry_recoveries: stats.retry_recoveries,
     classification: classifyTest(stats.retry_recoveries, recoveryRate, failureErrorRate),
   };

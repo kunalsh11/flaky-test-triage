@@ -129,13 +129,16 @@ async function ingestDataset(options = {}) {
   const upsertTestStmt = db.prepare(`
     INSERT INTO tests (
       test_id, flakiness_score, retry_recovery_rate, failure_error_rate,
-      total_executions, retry_recoveries, classification, triage_status, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'untriaged', ?)
+      total_executions, executed_executions, skipped_executions,
+      retry_recoveries, classification, triage_status, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'untriaged', ?)
     ON CONFLICT(test_id) DO UPDATE SET
       flakiness_score = excluded.flakiness_score,
       retry_recovery_rate = excluded.retry_recovery_rate,
       failure_error_rate = excluded.failure_error_rate,
       total_executions = excluded.total_executions,
+      executed_executions = excluded.executed_executions,
+      skipped_executions = excluded.skipped_executions,
       retry_recoveries = excluded.retry_recoveries,
       classification = excluded.classification,
       updated_at = excluded.updated_at
@@ -153,6 +156,8 @@ async function ingestDataset(options = {}) {
       summary.retry_recovery_rate,
       summary.failure_error_rate,
       summary.total_executions,
+      summary.executed_executions,
+      summary.skipped_executions,
       summary.retry_recoveries,
       summary.classification,
       now
