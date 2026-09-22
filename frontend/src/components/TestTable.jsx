@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 
 function getClassificationBadgeClass(classification) {
   switch (classification) {
@@ -24,6 +24,12 @@ function getTriageBadgeClass(status) {
   }
 }
 
+function getScoreClass(score) {
+  if (score >= 20) return 'score-badge score-high';
+  if (score >= 10) return 'score-badge score-med';
+  return 'score-badge score-low';
+}
+
 export default function TestTable({ tests, onSelectTest }) {
   if (!tests || tests.length === 0) {
     return (
@@ -33,28 +39,31 @@ export default function TestTable({ tests, onSelectTest }) {
     );
   }
 
+  // Bar length is relative to the worst offender, so the column reads as a ranking.
+  const peak = tests.reduce((max, t) => Math.max(max, t.flakiness_score), 0) || 1;
+
   return (
     <div className="table-wrapper">
       <table className="test-table">
         <thead>
           <tr>
-            <th className="col-rank">Rank</th>
+            <th className="col-rank">#</th>
             <th className="col-test">Test</th>
-            <th className="col-score">Flakiness Score</th>
-            <th className="col-rate">Failure/Error Rate</th>
+            <th className="col-score">Score</th>
+            <th className="col-rate">Fail / Error</th>
             <th className="col-rate">Retry Recovery</th>
             <th className="col-badge">Classification</th>
-            <th className="col-badge">Triage Status</th>
+            <th className="col-badge">Triage</th>
           </tr>
         </thead>
         <tbody>
           {tests.map((test, index) => (
-            <tr 
+            <tr
               key={test.test_id}
               className="clickable-row"
               onClick={() => onSelectTest && onSelectTest(test.test_id)}
             >
-              <td className="col-rank">#{index + 1}</td>
+              <td className="col-rank">{String(index + 1).padStart(2, '0')}</td>
               <td className="col-test">
                 <button
                   type="button"
@@ -69,8 +78,14 @@ export default function TestTable({ tests, onSelectTest }) {
                 </button>
               </td>
               <td className="col-score">
-                <span className={`score-badge ${test.flakiness_score >= 20 ? 'score-high' : test.flakiness_score >= 10 ? 'score-med' : 'score-low'}`}>
+                <span className={getScoreClass(test.flakiness_score)}>
                   {test.flakiness_score.toFixed(2)}
+                </span>
+                <span className="score-bar" aria-hidden="true">
+                  <span
+                    className="score-bar-fill"
+                    style={{ width: (test.flakiness_score / peak) * 100 + '%' }}
+                  />
                 </span>
               </td>
               <td className="col-rate">{(test.failure_error_rate * 100).toFixed(1)}%</td>
