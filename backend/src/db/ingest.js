@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { getDatabase } = require('./connection');
+const { createTestStats, accumulateExecution, summarizeTestStats } = require('../lib/flakiness');
 
 const defaultJsonlPath = path.join(__dirname, '..', '..', '..', 'data', 'ci_runs.jsonl');
 
@@ -119,42 +120,10 @@ async function ingestDataset(options = {}) {
     const [, testId] = groupKey.split(':::');
 
     if (!testStatsMap.has(testId)) {
-      testStatsMap.set(testId, {
-        test_id: testId,
-        total_executions: 0,
-        passes: 0,
-        failures: 0,
-        errors: 0,
-        skips: 0,
-        retry_recoveries: 0,
-      });
+      testStatsMap.set(testId, createTestStats(testId));
     }
 
-    const stats = testStatsMap.get(testId);
-    stats.total_executions++;
-
-    attempts.sort((a, b) => a.attempt - b.attempt);
-
-    const firstAttempt = attempts[0];
-    const initialFailed = firstAttempt.status === 'failed' || firstAttempt.status === 'error';
-    const hasPass = attempts.some(a => a.status === 'passed');
-    const isSkipped = attempts.every(a => a.status === 'skipped');
-
-    if (isSkipped) {
-      stats.skips++;
-    } else if (hasPass) {
-      stats.passes++;
-      if (initialFailed) {
-        stats.retry_recoveries++;
-        if (firstAttempt.status === 'failed') stats.failures++;
-        if (firstAttempt.status === 'error') stats.errors++;
-      }
-    } else {
-      for (const att of attempts) {
-        if (att.status === 'failed') stats.failures++;
-        if (att.status === 'error') stats.errors++;
-      }
-    }
+    accumulateExecution(testStatsMap.get(testId), attempts);
   }
 
   const upsertTestStmt = db.prepare(`
@@ -176,31 +145,16 @@ async function ingestDataset(options = {}) {
 
   db.exec('BEGIN TRANSACTION;');
   for (const stats of testStatsMap.values()) {
-    const execs = stats.total_executions;
-    const recoveryRate = execs > 0 ? stats.retry_recoveries / execs : 0;
-    const failureErrorRate = execs > 0 ? (stats.failures + stats.errors) / execs : 0;
-
-    const flakinessScore = (0.60 * recoveryRate + 0.40 * failureErrorRate) * 100;
-
-    let classification = 'Stable';
-    if (stats.retry_recoveries === 0 && failureErrorRate >= 0.10) {
-      classification = 'Likely Broken';
-    } else if (recoveryRate >= 0.05) {
-      classification = 'Likely Flaky';
-    } else if (stats.retry_recoveries > 0 && recoveryRate < 0.05) {
-      classification = 'Possible Flake';
-    } else {
-      classification = 'Stable';
-    }
+    const summary = summarizeTestStats(stats);
 
     upsertTestStmt.run(
-      stats.test_id,
-      Number(flakinessScore.toFixed(2)),
-      Number(recoveryRate.toFixed(4)),
-      Number(failureErrorRate.toFixed(4)),
-      execs,
-      stats.retry_recoveries,
-      classification,
+      summary.test_id,
+      summary.flakiness_score,
+      summary.retry_recovery_rate,
+      summary.failure_error_rate,
+      summary.total_executions,
+      summary.retry_recoveries,
+      summary.classification,
       now
     );
   }

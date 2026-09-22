@@ -1,27 +1,16 @@
 const { getDatabase } = require('../db/connection');
+const {
+  parseTimestampToUtcMs,
+  parseDateBoundaryToUtcMs,
+  createTestStats,
+  sortAttempts,
+  accumulateExecution,
+  summarizeTestStats,
+} = require('../lib/flakiness');
 
-function parseTimestampToUtcMs(timestampStr) {
-  if (!timestampStr) return null;
-  let cleanStr = timestampStr.trim();
-
-  if (!cleanStr.endsWith('Z') && !/[+-]\d{2}:?\d{2}$/.test(cleanStr)) {
-    cleanStr = cleanStr + 'Z';
-  }
-
-  const time = new Date(cleanStr).getTime();
-  return isNaN(time) ? null : time;
-}
-
-function parseDateBoundaryToUtcMs(dateStr, isEndOfDay = false) {
-  if (!dateStr) return null;
-  const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!match) return null;
-
-  const [, year, month, day] = match;
-  if (isEndOfDay) {
-    return Date.UTC(Number(year), Number(month) - 1, Number(day), 23, 59, 59, 999);
-  }
-  return Date.UTC(Number(year), Number(month) - 1, Number(day), 0, 0, 0, 0);
+function matchesSuite(testId, suite) {
+  const segments = testId.split('/');
+  return segments.length > 1 && segments[1] === suite;
 }
 
 function getRankedTests(filters = {}) {
@@ -52,10 +41,7 @@ function getRankedTests(filters = {}) {
     const rows = db.prepare(query).all(...params);
 
     if (suite) {
-      return rows.filter((row) => {
-        const segments = row.test_id.split('/');
-        return segments.length > 1 && segments[1] === suite;
-      });
+      return rows.filter((row) => matchesSuite(row.test_id, suite));
     }
 
     return rows;
@@ -117,9 +103,8 @@ function getRankedTests(filters = {}) {
   const testStatsMap = new Map();
 
   for (const execution of logicalExecutionsMap.values()) {
-    execution.attempts.sort((a, b) => a.attempt - b.attempt);
-
-    const firstAttempt = execution.attempts[0];
+    const attempts = sortAttempts(execution.attempts);
+    const firstAttempt = attempts[0];
 
     if (branch && execution.branch !== branch) {
       continue;
@@ -135,85 +120,80 @@ function getRankedTests(filters = {}) {
 
     const testId = execution.test_id;
     if (!testStatsMap.has(testId)) {
-      testStatsMap.set(testId, {
-        test_id: testId,
-        total_executions: 0,
-        passes: 0,
-        failures: 0,
-        errors: 0,
-        skips: 0,
-        retry_recoveries: 0,
-      });
+      testStatsMap.set(testId, createTestStats(testId));
     }
 
-    const stats = testStatsMap.get(testId);
-    stats.total_executions++;
-
-    const initialFailed = firstAttempt.status === 'failed' || firstAttempt.status === 'error';
-    const hasPass = execution.attempts.some(a => a.status === 'passed');
-    const isSkipped = execution.attempts.every(a => a.status === 'skipped');
-
-    if (isSkipped) {
-      stats.skips++;
-    } else if (hasPass) {
-      stats.passes++;
-      if (initialFailed) {
-        stats.retry_recoveries++;
-        if (firstAttempt.status === 'failed') stats.failures++;
-        if (firstAttempt.status === 'error') stats.errors++;
-      }
-    } else {
-      for (const att of execution.attempts) {
-        if (att.status === 'failed') stats.failures++;
-        if (att.status === 'error') stats.errors++;
-      }
-    }
+    accumulateExecution(testStatsMap.get(testId), attempts);
   }
 
   const results = [];
 
   for (const stats of testStatsMap.values()) {
-    const execs = stats.total_executions;
-    const recoveryRate = execs > 0 ? stats.retry_recoveries / execs : 0;
-    const failureErrorRate = execs > 0 ? (stats.failures + stats.errors) / execs : 0;
+    const summary = summarizeTestStats(stats);
 
-    const flakinessScore = (0.60 * recoveryRate + 0.40 * failureErrorRate) * 100;
-
-    let testClassification = 'Stable';
-    if (stats.retry_recoveries === 0 && failureErrorRate >= 0.10) {
-      testClassification = 'Likely Broken';
-    } else if (recoveryRate >= 0.05) {
-      testClassification = 'Likely Flaky';
-    } else if (stats.retry_recoveries > 0 && recoveryRate < 0.05) {
-      testClassification = 'Possible Flake';
-    } else {
-      testClassification = 'Stable';
-    }
-
-    if (classification && testClassification !== classification) {
+    if (classification && summary.classification !== classification) {
       continue;
     }
 
-    if (suite) {
-      const segments = stats.test_id.split('/');
-      if (segments.length <= 1 || segments[1] !== suite) {
-        continue;
-      }
+    if (suite && !matchesSuite(summary.test_id, suite)) {
+      continue;
     }
 
     results.push({
-      test_id: stats.test_id,
-      flakiness_score: Number(flakinessScore.toFixed(2)),
-      retry_recovery_rate: Number(recoveryRate.toFixed(4)),
-      failure_error_rate: Number(failureErrorRate.toFixed(4)),
-      classification: testClassification,
-      triage_status: triageStatusMap.get(stats.test_id) || 'untriaged',
+      test_id: summary.test_id,
+      flakiness_score: summary.flakiness_score,
+      retry_recovery_rate: summary.retry_recovery_rate,
+      failure_error_rate: summary.failure_error_rate,
+      classification: summary.classification,
+      triage_status: triageStatusMap.get(summary.test_id) || 'untriaged',
     });
   }
 
   results.sort((a, b) => b.flakiness_score - a.flakiness_score);
 
   return results;
+}
+
+/**
+ * Orders raw attempt rows for the detail view.
+ *
+ * Rows cannot be ordered by `started_at` directly. The column holds three
+ * timestamp formats that do not sort correctly as strings, and 344 retries in
+ * the dataset carry a timestamp earlier than their own first attempt. So rows
+ * are grouped into logical executions, executions are ordered newest-first by
+ * the UTC-normalised start of their first attempt, and attempts within an
+ * execution always read in retry order (Attempt 1 -> Attempt 2).
+ */
+function orderHistoryRows(rows) {
+  const executions = new Map();
+
+  for (const row of rows) {
+    if (!executions.has(row.run_id)) {
+      executions.set(row.run_id, []);
+    }
+    executions.get(row.run_id).push(row);
+  }
+
+  const ordered = [];
+
+  for (const attempts of executions.values()) {
+    attempts.sort((a, b) => (a.attempt - b.attempt) || (a.id - b.id));
+    ordered.push({
+      attempts,
+      startedAtMs: parseTimestampToUtcMs(attempts[0].started_at),
+      firstRowId: attempts[0].id,
+    });
+  }
+
+  ordered.sort((a, b) => {
+    const aMs = a.startedAtMs === null ? -Infinity : a.startedAtMs;
+    const bMs = b.startedAtMs === null ? -Infinity : b.startedAtMs;
+    return (bMs - aMs) || (b.firstRowId - a.firstRowId);
+  });
+
+  return ordered.flatMap((execution) =>
+    execution.attempts.map(({ id, ...row }) => row)
+  );
 }
 
 function getTestDetail(testId) {
@@ -238,6 +218,7 @@ function getTestDetail(testId) {
 
   const historyQuery = `
     SELECT 
+      id,
       run_id,
       commit_sha,
       branch,
@@ -249,10 +230,9 @@ function getTestDetail(testId) {
       message
     FROM test_runs
     WHERE test_id = ?
-    ORDER BY started_at DESC, id DESC
   `;
 
-  const history = db.prepare(historyQuery).all(testId);
+  const history = orderHistoryRows(db.prepare(historyQuery).all(testId));
 
   return {
     summary,
@@ -284,6 +264,7 @@ module.exports = {
   getRankedTests,
   getTestDetail,
   updateTriageStatus,
+  orderHistoryRows,
   parseTimestampToUtcMs,
   parseDateBoundaryToUtcMs,
 };

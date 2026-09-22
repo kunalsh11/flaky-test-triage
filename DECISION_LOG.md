@@ -40,4 +40,4 @@ We rejected a complex 4-factor scoring model after empirical validation showed i
 ---
 
 ### Decision 8: Separate "Likely Broken" from "Likely Flaky"
-Tests with high failure rates but zero retry recoveries (such as `test_payments_idempotency` at 46% failure rate) were categorized as "Likely Broken" rather than flaky, helping engineers immediately distinguish persistent bugs from intermittent non-determinism.
+Tests with high failure rates but zero retry recoveries (such as `test_payments_idempotency` at 34% failure rate) were categorized as "Likely Broken" rather than flaky, helping engineers immediately distinguish persistent bugs from intermittent non-determinism.

@@ -281,8 +281,8 @@ export default function TestDetail({ testId, onBack }) {
           <h2>CI Execution History & Retry Evidence</h2>
           <span className="record-count">
             {hasActiveFilters
-              ? `Showing ${filteredHistory.length} of ${history.length} runs`
-              : `${history.length} runs recorded (newest first)`}
+              ? `Showing ${filteredHistory.length} of ${history.length} attempts`
+              : `${history.length} attempts recorded (newest execution first, retries in order)`}
           </span>
         </div>
 

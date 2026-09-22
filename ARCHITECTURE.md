@@ -24,6 +24,7 @@ SQLite Database (flaky_test_triage.db)
 ### Layer Responsibilities
 * **Frontend (React + Vite)**: Renders the scannable ranked test table, interactive filters, single-test detail views with retry evidence, and handles user triage actions.
 * **REST API Layer (Express Routes)**: Validates incoming HTTP request query parameters and payloads, maps routes to service functions, and formats standard JSON error and success responses.
+* **Shared Domain Logic (`lib/flakiness.js`)**: Single source of truth for timestamp normalisation, logical-execution folding, the 60/40 score and classification thresholds. Both the ingestion pipeline and the service layer consume it so the precomputed and recalculated paths cannot drift.
 * **Service Layer (`testService.js`)**: Encapsulates business logic: flakiness score calculation, logical execution aggregation, UTC date range handling, suite derivation, and database interactions.
 * **Database Layer (`node:sqlite`)**: Embedded single-file relational storage with indexes for fast read operations and mutable triage status persistence.
 
@@ -117,6 +118,23 @@ The SQLite database (`backend/data/flaky_test_triage.db`) separates summary metr
 * **Attempt 1**: `failed` (e.g. timeout at 10:00:00)
 * **Attempt 2**: `passed` (e.g. completed at 10:00:05)
 * **Same `run_id` + `test_id`**: This is **one logical execution** that proved non-deterministic behavior.
+
+### Counting Rule: Per Execution, Never Per Attempt
+Every rate is a fraction of **logical executions**, so `failure_error_rate` is bounded by 0..1.
+An execution that fails on attempt 1 and fails again on attempt 2 counts as **one** failing
+execution, not two. 52 executions in the dataset have this shape, and all of them belong to
+`tests/payments/test_payments_idempotency`.
+
+### Ordering Rule: Attempt Number, Never Timestamp
+Attempts are ordered by `attempt` number, never by `started_at`:
+* `started_at` holds three formats (`Z`, `+05:30`, suffix-less) that do not sort correctly as
+  strings, so it is normalised to UTC epoch milliseconds before any comparison.
+* 344 of the 652 retry rows carry a `started_at` **earlier** than their own first attempt, so a
+  timestamp cannot establish which attempt came first.
+
+The detail view therefore groups rows into logical executions, orders executions newest-first by
+the UTC-normalised start of their first attempt, and always renders the attempts within an
+execution in retry order (Attempt 1 -> Attempt 2).
 
 ### What is NOT a Retry Recovery
 * **Run 1, Attempt 1**: `failed` on commit `abc` on `main`
