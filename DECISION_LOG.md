@@ -41,3 +41,8 @@ We rejected a complex 4-factor scoring model after empirical validation showed i
 
 ### Decision 8: Separate "Likely Broken" from "Likely Flaky"
 Tests with high failure rates but zero retry recoveries (such as `test_payments_idempotency` at 34% failure rate) were categorized as "Likely Broken" rather than flaky, helping engineers immediately distinguish persistent bugs from intermittent non-determinism.
+
+---
+
+### Decision 9: Exclude Skipped Executions from Rate Denominators
+CI skips tests for reasons unrelated to reliability (tags, shard assignment, conditional suites). Counting a skipped execution in the denominator treats "did not run" as evidence of stability, which systematically deflated the `admin` suite — skipped in up to 38% of its executions. We now divide by executed executions only, while retaining `total_executions` for auditing. This moved `test_bulk_export` from rank #9 to #4 and left the 101 tests with no skips completely unchanged.

@@ -81,7 +81,7 @@ function validateDatabase() {
   });
 
   const topTests = db.prepare(`
-    SELECT test_id, flakiness_score, retry_recoveries, total_executions, retry_recovery_rate, failure_error_rate, classification, triage_status
+    SELECT test_id, flakiness_score, retry_recoveries, total_executions, executed_executions, skipped_executions, retry_recovery_rate, failure_error_rate, classification, triage_status
     FROM tests
     ORDER BY flakiness_score DESC
     LIMIT 10
@@ -94,6 +94,7 @@ function validateDatabase() {
     'Rank'.padEnd(5) +
     'Test ID'.padEnd(48) +
     'Execs'.padStart(7) +
+    'Skipped'.padStart(9) +
     'Recovs'.padStart(8) +
     'Recov Rate'.padStart(12) +
     'Fail Rate'.padStart(12) +
@@ -107,7 +108,8 @@ function validateDatabase() {
     console.log(
       String(i + 1).padEnd(5) +
       t.test_id.padEnd(48) +
-      String(t.total_executions).padStart(7) +
+      String(t.executed_executions).padStart(7) +
+      String(t.skipped_executions).padStart(9) +
       String(t.retry_recoveries).padStart(8) +
       ((t.retry_recovery_rate * 100).toFixed(1) + '%').padStart(12) +
       ((t.failure_error_rate * 100).toFixed(1) + '%').padStart(12) +
