@@ -27,7 +27,7 @@ function validateDatabase() {
   const paymentsTest = db.prepare('SELECT * FROM tests WHERE test_id = ?').get('tests/payments/test_payments_idempotency');
   console.log(`\nCheck 4 & 6: Payments Idempotency Test`);
   console.log(`  Test ID        : ${paymentsTest?.test_id}`);
-  console.log(`  Flakiness Score: ${paymentsTest?.flakiness_score} (Expected ~18.43)`);
+  console.log(`  Flakiness Score: ${paymentsTest?.flakiness_score} (Expected ~13.78)`);
   console.log(`  Recovery Rate  : ${(paymentsTest?.retry_recovery_rate * 100).toFixed(2)}%`);
   console.log(`  Fail/Err Rate  : ${(paymentsTest?.failure_error_rate * 100).toFixed(2)}%`);
   console.log(`  Classification : ${paymentsTest?.classification}`);

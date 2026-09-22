@@ -209,7 +209,7 @@ export default function TestDetail({ testId, onBack }) {
       <section className="detail-history-section card">
         <div className="card-header">
           <h2>CI Execution History & Retry Evidence</h2>
-          <span className="record-count">{history ? history.length : 0} runs recorded (newest first)</span>
+          <span className="record-count">{history ? history.length : 0} attempts recorded (newest execution first, retries in order)</span>
         </div>
 
         {(!history || history.length === 0) ? (

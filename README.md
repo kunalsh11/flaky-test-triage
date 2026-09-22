@@ -35,7 +35,7 @@ Because both attempts execute on the exact same commit, branch, and environment,
 
 ### Broken vs. Flaky Tests
 * **Flaky Test Example (`test_oauth_callback_timeout`)**: Fails 32.4% of the time, but recovers on retry in 24.4% of runs. Score: **27.61** (`Likely Flaky`).
-* **Broken Test Example (`test_payments_idempotency`)**: Fails 46.1% of the time, but **never** recovers on retry (0 recoveries). Score: **18.43** (`Likely Broken`).
+* **Broken Test Example (`test_payments_idempotency`)**: Fails in 34.5% of its executions, but **never** recovers on retry (0 recoveries). Score: **13.78** (`Likely Broken`).
 
 ---
 
@@ -85,6 +85,7 @@ flaky-test-triage/
 |   |-- data/                 # SQLite database storage
 |   |-- src/
 |   |   |-- db/               # DB connection, schema & ingestion
+|   |   |-- lib/               # Shared flakiness scoring & timestamp logic
 |   |   |-- routes/           # Express REST route handlers
 |   |   |-- services/         # Business logic & flakiness calculations
 |   |   `-- server.js         # Server entry point (port 3000)
