@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getRankedTests } from '../services/api';
 import TestTable from '../components/TestTable';
 import FilterBar from '../components/FilterBar';
+import Navbar from '../components/Navbar';
 
-export default function Dashboard({ onSelectTest }) {
+export default function Dashboard({ onSelectTest, onNavigateAuth }) {
   const [tests, setTests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -110,21 +111,11 @@ export default function Dashboard({ onSelectTest }) {
 
   return (
     <>
-      <div className="app-bar">
-        <div className="app-bar-inner">
-          <span className="app-mark">flaky test triage</span>
-          <span className="app-meta">{metaLabel}</span>
-          <button
-            type="button"
-            className="kbd-hint"
-            onClick={() => setPaletteOpen(true)}
-            aria-label="Search tests"
-          >
-            <span>Search</span>
-            <span aria-hidden="true">Ctrl K</span>
-          </button>
-        </div>
-      </div>
+      <Navbar
+        metaLabel={metaLabel}
+        onOpenSearch={() => setPaletteOpen(true)}
+        onNavigateAuth={onNavigateAuth}
+      />
 
       <div className="dashboard-container">
         <header className="dashboard-header">

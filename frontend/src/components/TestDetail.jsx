@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { getTestDetail, updateTriageStatus } from '../services/api';
+import Navbar from './Navbar';
 
 function getStatusBadgeClass(status) {
   switch (status) {
@@ -40,7 +41,7 @@ function getTriageBadgeClass(status) {
   }
 }
 
-export default function TestDetail({ testId, onBack }) {
+export default function TestDetail({ testId, onBack, onNavigateAuth }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -187,12 +188,14 @@ export default function TestDetail({ testId, onBack }) {
   const currentStatus = summary.triage_status || 'untriaged';
 
   return (
-    <div className="dashboard-container">
-      <div className="detail-top-nav">
-        <button className="btn-back" onClick={onBack}>
-          ← Back to tests
-        </button>
-      </div>
+    <>
+      <Navbar metaLabel="Test Detail" onNavigateAuth={onNavigateAuth} />
+      <div className="dashboard-container">
+        <div className="detail-top-nav">
+          <button className="btn-back" onClick={onBack}>
+            ← Back to tests
+          </button>
+        </div>
 
       <header className="detail-header card">
         <div className="detail-title-section">
@@ -441,5 +444,6 @@ export default function TestDetail({ testId, onBack }) {
         )}
       </section>
     </div>
+    </>
   );
 }
